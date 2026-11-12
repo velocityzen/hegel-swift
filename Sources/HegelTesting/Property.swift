@@ -115,6 +115,7 @@ struct PropertyRunner {
         _ body: (TestCase) throws -> Void
     ) throws {
         let recorder = recorder?.fresh() ?? CaseRecorder(annotation: nil)
+        tc.hasRecordedFailure = { recorder.sawFailure }
         do {
             try IssueInterceptor.$recorder.withValue(recorder) {
                 try body(tc)
@@ -134,6 +135,7 @@ struct PropertyRunner {
         _ body: (TestCase) async throws -> Void
     ) async throws {
         let recorder = recorder?.fresh() ?? CaseRecorder(annotation: nil)
+        tc.hasRecordedFailure = { recorder.sawFailure }
         do {
             try await IssueInterceptor.$recorder.withValue(recorder) {
                 try await body(tc)

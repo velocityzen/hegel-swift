@@ -25,7 +25,13 @@ public final class TestCase {
     private var drawNumber = 0
     private var usedNames: [String: Int] = [:]
     private var nesting = 0
-    private(set) var stop: TestCaseStop?
+    /// The number of spans this handle has open.
+    private(set) var spanDepth = 0
+    var stop: TestCaseStop?
+    /// Whether the test framework has recorded a failure for this case
+    /// without a thrown error, as `#expect` does. State machines check it
+    /// to stop at the failing step.
+    package var hasRecordedFailure: () -> Bool = { false }
 
     init(raw: OpaquePointer, context: EngineContext, printsOutput: Bool) {
         self.raw = raw
@@ -36,6 +42,20 @@ public final class TestCase {
     deinit {
         rootPrinter = nil
         hegel_test_case_free(nil, raw)
+    }
+
+    /// A handle onto this case's choices whose output is an indented block
+    /// at the current position of this one's, with its own draw names: the
+    /// body of a state machine step under its heading.
+    func block(indent: Int) throws -> TestCase {
+        var handle: OpaquePointer?
+        try call { hegel_test_case_block($0, raw, UInt64(indent), &handle) }
+        guard let handle else {
+            throw HegelError.engine("libhegel returned no block handle")
+        }
+        let block = TestCase(raw: handle, context: context, printsOutput: printsOutput)
+        block.hasRecordedFailure = hasRecordedFailure
+        return block
     }
 
     private var printer: Printer {
@@ -169,9 +189,19 @@ public final class TestCase {
     /// Calls libhegel on this test case, turning a stop into the error that
     /// ends the case and any other failure into a usage error.
     func call(_ body: (OpaquePointer) -> hegel_result_t) throws {
+        _ = try callAllowingRetry(body)
+    }
+
+    /// Like `call`, but returns false instead of throwing when the engine
+    /// answers `HEGEL_E_RETRY`.
+    func callAllowingRetry(_ body: (OpaquePointer) -> hegel_result_t) throws -> Bool {
         do {
             try context.call(body)
+            return true
         } catch {
+            if error.code == HEGEL_E_RETRY {
+                return false
+            }
             if error.isStopTest {
                 stop = .overrun
                 throw TestCaseStop.overrun
@@ -188,12 +218,21 @@ public final class TestCase {
     /// the shrinker.
     public func startSpan(_ label: Label) throws {
         try call { hegel_start_span($0, raw, label.rawValue) }
+        spanDepth += 1
     }
 
     /// Closes the most recent span. `discard` tells the shrinker its draws
     /// did not contribute to the value, as for a rejected filter attempt.
     public func stopSpan(discard: Bool = false) throws {
         try call { hegel_stop_span($0, raw, discard) }
+        spanDepth -= 1
+    }
+
+    /// Forgets the spans above `depth`, after the engine has closed them
+    /// itself, as it does for a discarded recursion attempt.
+    func resetSpanDepth(to depth: Int) {
+        precondition(spanDepth >= depth, "span depth below the recursion's start")
+        spanDepth = depth
     }
 
     func generateBool(probability: Double) throws -> Bool {

@@ -43,4 +43,31 @@ struct ReadmeTests {
         #expect(outcome.failure != nil)
         #expect(outcome.failure?.report().contains("let n = -9223372036854775808") == true)
     }
+
+    @Test("a state machine over a pool")
+    func bankMachine() throws {
+        struct Bank {
+            var balances: [String: Int] = [:]
+            var accounts: Pool<String>
+        }
+
+        let bank = StateMachine<Bank>()
+            .rule("open") { bank, tc in
+                let name = try tc.draw(.string(of: .ascii, count: 1...8), named: "name")
+                try tc.assume(bank.balances[name] == nil)
+                bank.balances[name] = 0
+                try bank.accounts.add(name)
+            }
+            .rule("close") { bank, tc in
+                let name = try tc.draw(bank.accounts.consumed, named: "account")
+                bank.balances[name] = nil
+            }
+            .invariant("one balance per account", everyStep: true) { bank, _ in
+                #expect(bank.balances.count == bank.accounts.count)
+            }
+
+        try Property.check(settings: isolated) { tc in
+            try bank.run(tc, from: Bank(accounts: try tc.pool()))
+        }
+    }
 }

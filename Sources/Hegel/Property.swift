@@ -221,6 +221,12 @@ final class RunDriver {
                 status = HEGEL_STATUS_OVERRUN
             case (.success, nil):
                 break
+            // A stop thrown from a block handle, such as a state machine
+            // step's, that the root handle did not see.
+            case (.failure(TestCaseStop.rejected), nil):
+                status = HEGEL_STATUS_INVALID
+            case (.failure(TestCaseStop.overrun), nil):
+                status = HEGEL_STATUS_OVERRUN
             case (.failure(let error as HegelError), nil):
                 usageError = error
             case (.failure(let error), nil):

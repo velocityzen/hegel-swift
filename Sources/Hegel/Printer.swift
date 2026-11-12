@@ -167,6 +167,9 @@ public final class Printer {
         guard let raw, let context else {
             return nil
         }
+        // Splice in the blocks of state machine steps, which print into
+        // deferred slots. With no slots open this is an error to ignore.
+        _ = hegel_printer_resolve(context.raw, raw)
         var result = hegel_printer_value_result_t()
         guard hegel_printer_value(context.raw, raw, &result) == HEGEL_OK else {
             return ["Failed to render this test case's drawn values: \(context.lastError)"]

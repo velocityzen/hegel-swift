@@ -6,8 +6,10 @@ struct Failed: Error, CustomStringConvertible {
 }
 
 /// Settings for tests that assert on the outcome of a run: no database, so
-/// one test's stored failures don't leak into the next run.
-let isolated = Settings(database: .disabled, printBlob: true)
+/// one test's stored failures don't leak into the next run, and
+/// derandomized, so a run finds the same examples locally as on CI, whose
+/// profile derandomizes.
+let isolated = Settings(derandomize: true, database: .disabled, printBlob: true)
 
 @Suite("Property runs")
 struct PropertyTests {

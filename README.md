@@ -41,6 +41,7 @@ Expectation failed: mySort(xs) == xs.sorted()
 - [Installation](#installation)
 - [Writing properties](#writing-properties)
 - [Generators](#generators)
+- [Stateful testing](#stateful-testing)
 - [Settings](#settings)
 - [Reproducing a failure](#reproducing-a-failure)
 - [Without Swift Testing](#without-swift-testing)
@@ -138,6 +139,7 @@ and give a type as many generators as you need.
 | Bytes | `.bytes(count:)` |
 | Collections | `.array(of:count:)`, `.set(of:count:)`, `.dictionary(keys:values:count:)` |
 | Choices | `.just(value)`, `.element(of:)`, `.oneOf(...)`, `.optional(gen)`, `Gen<E>.allCases` |
+| Recursion | `.recursive(maxDepth:maxLeaves:leaf:branch:)`, `.deferred { gen }` |
 | Combinators | `map`, `flatMap`, `filter`, `zip(a, b, ...)`, `a.zip(b, combine)`, `printed(with:)` |
 
 ```swift
@@ -160,6 +162,23 @@ let intervals = Gen { tc in
 }
 ```
 
+Recursive values, such as trees and expressions, come from `recursive`. You give it a leaf
+generator and a function from a generator of sub-values to one level of structure. The engine
+decides where a value branches, keeps it within `maxDepth` and `maxLeaves`, and shrinks a failing
+value toward a single leaf:
+
+```swift
+indirect enum Tree { case leaf(Int), node([Tree]) }
+
+let trees: Gen<Tree> = .recursive(leaf: Gen.int().map(Tree.leaf)) { subtree in
+    Gen.array(of: subtree, count: 1...3).map(Tree.node)
+}
+```
+
+Write `Gen.array` inside `branch`: a bare `.array` would be read as a `Gen<Tree>`. For
+generators that refer to each other, wrap the reference in `.deferred { ... }`. It is built on
+first use. Nothing bounds its depth but the engine's budget for a test case.
+
 Every generator shrinks through the engine. Shrinking edits the choices a generator made and
 runs the generator again, so a shrunk value always satisfies the generator's own invariants. You
 never write a shrinker.
@@ -168,6 +187,98 @@ Values print in the report as Swift renders them (`String(describing:)`, with st
 To print something else, such as hiding a secret, use `printed(with:)`. A generator built
 directly with `Gen(label:draw:)` prints through the `Printer` it is given: `text`, `group`,
 `breakable`, `reflow`, `value`, `speculate`.
+
+## Stateful testing
+
+A `StateMachine` tests a sequence of operations. You give it a model, which holds the system
+under test and whatever you check it against. Rules change the model and invariants check it.
+The engine picks which rules run and in what order. A failure shrinks to the fewest, simplest
+steps:
+
+```swift
+struct Stack {
+    var model: [Int] = []
+    let real = MyStack()
+}
+
+let stack = StateMachine<Stack>()
+    .rule("push") { s, tc in
+        let x = try tc.draw(.int(), named: "x")
+        s.model.append(x)
+        s.real.push(x)
+    }
+    .rule("pop") { s, tc in
+        try tc.assume(!s.model.isEmpty)
+        #expect(s.real.pop() == s.model.removeLast())
+    }
+    .invariant("count") { s, _ in
+        #expect(s.real.count == s.model.count)
+    }
+
+@Test(.hegel)
+func stackBehaves() throws {
+    try property { tc in
+        try stack.run(tc, from: Stack())
+    }
+}
+```
+
+If `MyStack.pop` returns the wrong element, the report lists the steps that show it:
+
+```
+Expectation failed: s.real.pop() == s.model.removeLast()
+  Falsifying example:
+      Step 1: push {
+        let x = 0
+      }
+      Step 2: pop {
+      }
+      Rule pop failed:
+```
+
+- A machine is a value. Build it once and run it in as many properties as you need. Each test
+  case starts from the model you pass to `run`, so create the system under test there.
+- A rule that rejects, with `assume`, `reject` or a draw from an empty pool, is skipped. The test
+  case goes on with another rule.
+- Every invariant is checked on the initial and the final state. Between steps, the engine
+  checks each one about once per test case. Pass `everyStep: true` to check it after every step,
+  which finds the failure at the step that causes it.
+- The run stops at the first failing step, whether it threw or an `#expect` failed.
+- `steps:` sets how many steps the engine aims for (50 by default). `weight:` makes a rule more
+  or less likely.
+
+A `Pool` holds values that later steps draw on, such as accounts opened or keys inserted. The
+engine picks which value a draw gets, and shrinks that choice:
+
+```swift
+struct Bank {
+    var balances: [String: Int] = [:]
+    var accounts: Pool<String>
+}
+
+let bank = StateMachine<Bank>()
+    .rule("open") { bank, tc in
+        let name = try tc.draw(.string(of: .ascii, count: 1...8), named: "name")
+        try tc.assume(bank.balances[name] == nil)
+        bank.balances[name] = 0
+        try bank.accounts.add(name)
+    }
+    .rule("close") { bank, tc in
+        let name = try tc.draw(bank.accounts.consumed, named: "account")
+        bank.balances[name] = nil
+    }
+
+try property { tc in
+    try bank.run(tc, from: Bank(accounts: try tc.pool()))
+}
+```
+
+Pools have three draws:
+
+- `pool.reusable` leaves the value in the pool.
+- `pool.consumed` removes it.
+- `pool.consumed(where:)` removes only a value that matches. Use it instead of
+  `consumed.filter`, which would also remove the values it rejects.
 
 ## Settings
 
@@ -295,8 +406,8 @@ release's checksums.
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
 - **Not yet wrapped:**
-  - recursive generators (`hegel_new_recursion`)
-  - state machines and pools
+  - concurrent state machines (several workers running rules at once)
+  - async rules and invariants
   - Lark grammars
   - dates, times, UUIDs and IP addresses
   - drawing from several threads (`hegel_test_case_clone`)
