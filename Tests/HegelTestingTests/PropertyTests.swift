@@ -81,7 +81,9 @@ struct HegelPropertyTests {
         }
         try #require(issues.count == 1)
         let issue = issues[0]
-        #expect(issue.description.contains("n < 10"))
+        // Swift Testing versions render the expression differently ("n < 10"
+        // or "(n → 10) < 10"), so match only the part they share.
+        #expect(issue.description.contains("< 10"))
         #expect(issue.commentText.contains("let n = 10"))
         #expect(issue.commentText.contains(".hegel(reproducing: \""))
     }
