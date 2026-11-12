@@ -136,6 +136,9 @@ and give a type as many generators as you need.
 | Integers | `.int(in:)`, `Gen<T>.integer(in:)` for any `FixedWidthInteger` up to 128 bits |
 | Floating point | `.double(in:allowNaN:allowInfinity:)`, `.float(in:...)` |
 | Text | `.string(of: Alphabet, count:)`, `.character(of:)`, `.matching(regex)`, `.email`, `.url`, `.domain(maxLength:)` |
+| Grammars | `.grammar(lark, start:imports:terminals:alphabet:maxSize:maxDepth:)` |
+| Dates and times | `.calendarDate(in:)`, `.timeOfDay(in:)`, `.localDateTime(in:)`, `.date(in:)` (Foundation `Date`, UTC) |
+| Identifiers | `.uuid(version:)`, `.ipv4`, `.ipv6` |
 | Bytes | `.bytes(count:)` |
 | Collections | `.array(of:count:)`, `.set(of:count:)`, `.dictionary(keys:values:count:)` |
 | Choices | `.just(value)`, `.element(of:)`, `.oneOf(...)`, `.optional(gen)`, `Gen<E>.allCases` |
@@ -161,6 +164,29 @@ let intervals = Gen { tc in
     return lo...hi
 }
 ```
+
+`.grammar` draws strings of a language written in
+[Lark's syntax](https://lark-parser.readthedocs.io/en/stable/grammar.html). A failing string
+shrinks through its parse tree, so it stays in the language:
+
+```swift
+let arithmetic = Gen.grammar(#"""
+    start: expr
+    expr: NUMBER | expr OP expr | "(" expr ")"
+    OP: "+" | "-" | "*"
+    NUMBER: /[0-9]/
+    """#)
+```
+
+- `imports:` maps the paths that `%import` needs to their text. Lark's bundled `common`,
+  `lark`, `python` and `unicode` grammars need no entry.
+- `terminals:` gives a generator for each terminal the grammar `%declare`s, or for any terminal
+  you want to override.
+
+The standard library has no calendar types, so dates and times come as plain values:
+`CalendarDate`, `TimeOfDay` and `LocalDateTime`, which have no time zone and print in ISO 8601.
+`.date(in:)` draws a Foundation `Date` through UTC. IP addresses come as `IPv4Address` and
+`IPv6Address`; each has its network-order `bytes` and prints in its standard text form.
 
 Recursive values, such as trees and expressions, come from `recursive`. You give it a leaf
 generator and a function from a generator of sub-values to one level of structure. The engine
@@ -408,8 +434,8 @@ release's checksums.
 - **Not yet wrapped:**
   - concurrent state machines (several workers running rules at once)
   - async rules and invariants
-  - Lark grammars
-  - dates, times, UUIDs and IP addresses
+  - repeated sections in reports (`hegel_new_repeat`)
+  - choosing the Unicode version for patterns (`hegel_set_unicode_version`)
   - drawing from several threads (`hegel_test_case_clone`)
   - explicit examples
   - the engine's output callback (engine messages go to stderr)

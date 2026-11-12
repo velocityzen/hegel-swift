@@ -83,15 +83,12 @@ final class StringGeneratorHandle: @unchecked Sendable {
     }
 }
 
-extension Gen where Value == String {
-    /// A string of characters from `alphabet` whose length, in Unicode
-    /// scalars, is in `count`. Without a range the length is up to the
-    /// engine's default maximum for text.
-    public static func string(of alphabet: Alphabet = .unicode, count: ClosedRange<Int>? = nil)
-        -> Gen<String>
+extension StringGeneratorHandle {
+    /// A generator of strings of `alphabet`'s characters.
+    static func text(_ alphabet: Alphabet, minCount: UInt64, maxCount: UInt64)
+        -> StringGeneratorHandle
     {
-        let (minCount, maxCount) = sizeBounds(count, defaultMax: maxSizeDefault)
-        let handle = StringGeneratorHandle { context, out in
+        StringGeneratorHandle { context, out in
             withOptionalHegelString(alphabet.codec.rawValue) { codec in
                 withHegelStrings(alphabet.categories) { categories, categoriesCount in
                     withHegelStrings(alphabet.excludedCategories) { excluded, excludedCount in
@@ -118,6 +115,18 @@ extension Gen where Value == String {
                 }
             }
         }
+    }
+}
+
+extension Gen where Value == String {
+    /// A string of characters from `alphabet` whose length, in Unicode
+    /// scalars, is in `count`. Without a range the length is up to the
+    /// engine's default maximum for text.
+    public static func string(of alphabet: Alphabet = .unicode, count: ClosedRange<Int>? = nil)
+        -> Gen<String>
+    {
+        let (minCount, maxCount) = sizeBounds(count, defaultMax: maxSizeDefault)
+        let handle = StringGeneratorHandle.text(alphabet, minCount: minCount, maxCount: maxCount)
         return handle.gen(label: Label.string.combined(with: .named("text")))
     }
 
@@ -161,12 +170,12 @@ extension Gen where Value == Character {
 }
 
 /// Calls `body` with a C array of libhegel string views, or nil for nil.
-private func withHegelStrings<R>(
+func withHegelStrings<R, E: Error>(
     _ strings: [String]?,
-    _ body: (UnsafePointer<hegel_string_t>?, Int) -> R
-) -> R {
+    _ body: (UnsafePointer<hegel_string_t>?, Int) throws(E) -> R
+) throws(E) -> R {
     guard let strings else {
-        return body(nil, 0)
+        return try body(nil, 0)
     }
     var bytes: [UInt8] = []
     var ranges: [Range<Int>] = []
@@ -175,11 +184,13 @@ private func withHegelStrings<R>(
         bytes.append(contentsOf: string.utf8)
         ranges.append(start..<bytes.count)
     }
-    return bytes.withUnsafeBufferPointer { buffer in
+    return try bytes.withUnsafeBufferPointer { (buffer) throws(E) -> R in
         let base = UnsafeRawPointer(buffer.baseAddress)?.assumingMemoryBound(to: CChar.self)
         let views = ranges.map { range in
             hegel_string_t(data: base.map { $0 + range.lowerBound }, len: range.count)
         }
-        return views.withUnsafeBufferPointer { body($0.baseAddress, $0.count) }
+        return try views.withUnsafeBufferPointer { (views) throws(E) -> R in
+            try body(views.baseAddress, views.count)
+        }
     }
 }

@@ -189,17 +189,27 @@ public final class TestCase {
     /// Calls libhegel on this test case, turning a stop into the error that
     /// ends the case and any other failure into a usage error.
     func call(_ body: (OpaquePointer) -> hegel_result_t) throws {
-        _ = try callAllowingRetry(body)
+        // `HEGEL_OK` is never thrown, so no other result is let through.
+        _ = try call(allowing: HEGEL_OK, body)
     }
 
     /// Like `call`, but returns false instead of throwing when the engine
     /// answers `HEGEL_E_RETRY`.
     func callAllowingRetry(_ body: (OpaquePointer) -> hegel_result_t) throws -> Bool {
+        try call(allowing: HEGEL_E_RETRY, body)
+    }
+
+    /// Like `call`, but returns false instead of throwing when the engine
+    /// answers `expected`.
+    func call(
+        allowing expected: hegel_result_t,
+        _ body: (OpaquePointer) -> hegel_result_t
+    ) throws -> Bool {
         do {
             try context.call(body)
             return true
         } catch {
-            if error.code == HEGEL_E_RETRY {
+            if error.code == expected {
                 return false
             }
             if error.isStopTest {
