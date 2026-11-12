@@ -27,10 +27,17 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
     public var settings: Settings
     /// A reproduce blob to replay instead of exploring.
     public var reproducing: String?
+    /// Receives the engine's output lines instead of standard error.
+    public var output: (@Sendable (String) -> Void)?
 
-    public init(settings: Settings = Settings(), reproducing: String? = nil) {
+    public init(
+        settings: Settings = Settings(),
+        reproducing: String? = nil,
+        output: (@Sendable (String) -> Void)? = nil
+    ) {
         self.settings = settings
         self.reproducing = reproducing
+        self.output = output
     }
 
     public var isRecursive: Bool { true }
@@ -49,6 +56,7 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         let scope = HegelScope(
             settings: (outer?.settings ?? Settings()).merging(settings),
             reproducing: reproducing ?? outer?.reproducing,
+            output: output ?? outer?.output,
             test: test
         )
         // Every scope installs the interceptor, so the innermost `.hegel`
@@ -94,6 +102,16 @@ extension Trait where Self == HegelTrait {
         HegelTrait(settings: settings)
     }
 
+    /// Runs the test's properties with Hegel and these settings, sending
+    /// the engine's output to `output` one line at a time instead of to
+    /// standard error: statistics, verbose logs and health check messages.
+    public static func hegel(
+        _ settings: Settings = Settings(),
+        output: @escaping @Sendable (String) -> Void
+    ) -> HegelTrait {
+        HegelTrait(settings: settings, output: output)
+    }
+
     /// Replays the failing example a failure report printed, instead of
     /// exploring. Remove it once the failure is fixed.
     public static func hegel(reproducing blob: String) -> HegelTrait {
@@ -105,6 +123,7 @@ extension Trait where Self == HegelTrait {
 struct HegelScope: Sendable {
     var settings: Settings
     var reproducing: String?
+    var output: (@Sendable (String) -> Void)?
     var test: Test
 
     @TaskLocal static var current: HegelScope?

@@ -16,8 +16,13 @@ import Synchronization
 /// A test case belongs to the property body it was passed to. Don't keep it
 /// after the body returns or hand it to another thread.
 public final class TestCase {
-    let raw: OpaquePointer
+    /// The engine's handle, or nil for an explicit example.
+    let raw: OpaquePointer?
     let context: EngineContext
+    /// Where an explicit example's draws come from, instead of the engine.
+    let explicit: ExplicitDraws?
+    /// How far an explicit example's lines from this handle are indented.
+    private let explicitIndent: String
     /// Whether this case prints its draws: only the cases a failure report
     /// can be built from do.
     let printsOutput: Bool
@@ -45,11 +50,26 @@ public final class TestCase {
         self.context = context
         self.printsOutput = printsOutput
         self.names = names
+        explicit = nil
+        explicitIndent = ""
+    }
+
+    /// A test case for an explicit example: it draws `example`'s values and
+    /// makes no engine calls.
+    init(example: ExplicitDraws, indent: String = "", names: DrawNames = DrawNames()) {
+        raw = nil
+        context = EngineContext()
+        printsOutput = false
+        explicit = example
+        explicitIndent = indent
+        self.names = names
     }
 
     deinit {
         rootPrinter = nil
-        hegel_test_case_free(nil, raw)
+        if let raw {
+            hegel_test_case_free(nil, raw)
+        }
     }
 
     /// A handle onto an independent choice stream of this test case, for
@@ -57,6 +77,11 @@ public final class TestCase {
     /// worker and the time. It has its own engine context, so it can be
     /// driven from another thread while this handle waits.
     func clone(worker: Int) throws -> TestCase {
+        if let explicit {
+            let clone = TestCase(example: explicit, indent: explicitIndent, names: names)
+            clone.hasRecordedFailure = hasRecordedFailure
+            return clone
+        }
         var handle: OpaquePointer?
         try call { hegel_test_case_clone($0, raw, &handle) }
         guard let handle else {
@@ -78,6 +103,15 @@ public final class TestCase {
     /// step or a `repeat` iteration under its heading. A step's draws are
     /// named afresh; an iteration's carry on from this handle's.
     func block(indent: Int, sharingNames: Bool = false) throws -> TestCase {
+        if let explicit {
+            let block = TestCase(
+                example: explicit,
+                indent: explicitIndent + String(repeating: " ", count: indent),
+                names: sharingNames ? names : DrawNames()
+            )
+            block.hasRecordedFailure = hasRecordedFailure
+            return block
+        }
         var handle: OpaquePointer?
         try call { hegel_test_case_block($0, raw, UInt64(indent), &handle) }
         guard let handle else {
@@ -112,6 +146,9 @@ public final class TestCase {
 
     /// The lines printed for this case: its drawn values and notes.
     func readOutput() -> [String] {
+        if let explicit {
+            return explicit.lines
+        }
         guard printsOutput else {
             return []
         }
@@ -126,6 +163,9 @@ public final class TestCase {
     /// unnamed draw is called `draw_1`, `draw_2`, and so on; a name used
     /// twice gets a numbered suffix.
     public func draw<Value>(_ generator: Gen<Value>, named name: String? = nil) throws -> Value {
+        if let explicit {
+            return try explicit.take(names.allocate(name), as: Value.self, indent: explicitIndent)
+        }
         guard printsOutput, nesting == 0 else {
             return try drawSilent(generator)
         }
@@ -141,7 +181,12 @@ public final class TestCase {
 
     /// Draws a value from `generator` without showing it in the report.
     public func drawSilent<Value>(_ generator: Gen<Value>) throws -> Value {
-        try draw(generator, printer: .disabled)
+        if explicit != nil {
+            throw HegelError.usage(
+                "drawSilent isn't supported in explicit examples: draw with tc.draw(_:named:)"
+            )
+        }
+        return try draw(generator, printer: .disabled)
     }
 
     /// Draws from `generator` inside a span labelled with its label,
@@ -177,6 +222,10 @@ public final class TestCase {
 
     /// Adds a line to the report of a failing example.
     public func note(_ message: String) {
+        if let explicit {
+            explicit.record(explicitIndent + message)
+            return
+        }
         guard printsOutput else {
             return
         }
@@ -188,6 +237,9 @@ public final class TestCase {
     /// Steers generation toward test cases that score higher on `label`.
     /// Each label may be recorded once per test case.
     public func target(_ score: Double, label: String = "") throws {
+        guard explicit == nil else {
+            return
+        }
         try label.withHegelString { (view) throws in
             try call { hegel_target($0, raw, score, view) }
         }
@@ -196,6 +248,9 @@ public final class TestCase {
     /// Records that `label` happened in this test case, for the statistics
     /// report.
     public func event(_ label: String) throws {
+        guard explicit == nil else {
+            return
+        }
         try label.withHegelString { (view) throws in
             try call { hegel_event($0, raw, view) }
         }
@@ -204,6 +259,9 @@ public final class TestCase {
     /// Records a numeric observation under `label`, for the statistics
     /// report.
     public func event(_ label: String, value: Double) throws {
+        guard explicit == nil else {
+            return
+        }
         try label.withHegelString { (view) throws in
             try call { hegel_event_value($0, raw, value, view) }
         }
@@ -230,6 +288,15 @@ public final class TestCase {
         allowing expected: hegel_result_t,
         _ body: (OpaquePointer) -> hegel_result_t
     ) throws -> Bool {
+        if explicit != nil {
+            throw HegelError.usage(
+                """
+                Explicit examples make no engine calls, so they support draw(_:named:), \
+                note, assume, reject, target, event, repeat and concurrently, but not \
+                pools, state machines, spans or a generator's own draws
+                """
+            )
+        }
         do {
             try context.call(body)
             return true

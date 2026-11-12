@@ -321,4 +321,16 @@ final class EngineSettings {
         hegel_settings_get_print_blob(nil, raw, &value)
         return value
     }
+
+    var phases: Settings.Phases {
+        var value = Settings.Phases.all.rawValue
+        hegel_settings_get_phases(nil, raw, &value)
+        return Settings.Phases(rawValue: value)
+    }
+
+    var reportMultipleFailures: Bool {
+        var value = false
+        hegel_settings_get_report_multiple_failures(nil, raw, &value)
+        return value
+    }
 }

@@ -28,6 +28,8 @@ extension TestCase {
     /// on. Any other failure ends the loop and fails the test case. When the
     /// engine ends the loop, `repeat` throws to end the test case as passed:
     /// let that error propagate, and put nothing after the call.
+    ///
+    /// In an explicit example the body runs once.
     public func `repeat`(_ body: (TestCase) throws -> Void) throws -> Never {
         let loop = try RepeatLoop(self)
         while let iteration = try loop.next() {
@@ -65,27 +67,36 @@ struct RepeatFinished: Error {}
 /// One `repeat` call's engine loop, shared by the sync and async versions.
 private final class RepeatLoop {
     private let tc: TestCase
-    private let raw: OpaquePointer
+    /// The engine's loop, or nil in an explicit example.
+    private let raw: OpaquePointer?
     private var iteration = 0
 
     init(_ tc: TestCase) throws {
+        self.tc = tc
+        if tc.explicit != nil {
+            raw = nil
+            return
+        }
         var handle: OpaquePointer?
         try tc.call { hegel_new_repeat($0, tc.raw, &handle) }
         guard let handle else {
             throw HegelError.engine("libhegel returned no repeat handle")
         }
-        self.tc = tc
         raw = handle
     }
 
     deinit {
-        hegel_repeat_free(nil, raw)
+        if let raw {
+            hegel_repeat_free(nil, raw)
+        }
     }
 
     /// The handle the next iteration runs on, or nil when the loop is over.
     func next() throws -> TestCase? {
-        var more = false
-        try tc.call { hegel_repeat_more($0, tc.raw, raw, &more) }
+        var more = iteration == 0
+        if let raw {
+            try tc.call { hegel_repeat_more($0, tc.raw, raw, &more) }
+        }
         guard more else {
             return nil
         }
@@ -120,6 +131,9 @@ private final class RepeatLoop {
     /// Tells the engine the iteration just run failed, so the shrinker can
     /// tell it from the ones before.
     private func failed() throws {
+        guard let raw else {
+            return
+        }
         try tc.call { hegel_repeat_failed($0, tc.raw, raw) }
     }
 }

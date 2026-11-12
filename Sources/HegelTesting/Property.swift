@@ -18,7 +18,11 @@ import Synchronization
 ///     }
 /// }
 /// ```
+///
+/// `examples` are explicit examples, run first with the values they give,
+/// keyed by draw name. See `Example`.
 public func property(
+    examples: [Example] = [],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) throws -> Void
 ) throws {
@@ -32,6 +36,7 @@ public func property(
             try Property.run(
                 settings: scope.settings,
                 reproducing: blob,
+                output: scope.output,
                 { tc in try runner.runCase(tc, recorder, body) }
             )
         }
@@ -41,20 +46,25 @@ public func property(
         settings: scope.settings,
         databaseKey: scope.databaseKey,
         location: scope.location,
+        examples: examples,
+        output: scope.output,
         { tc in try runner.runCase(tc, nil, body) }
     )
-    try runner.report(outcome) { blob, recorder in
+    try runner.report(outcome) { replay, recorder in
         try Property.run(
-            settings: scope.settings,
-            reproducing: blob,
+            settings: replay.settings(scope.settings),
+            reproducing: replay.blob,
+            examples: replay.examples,
+            output: scope.output,
             { tc in try runner.runCase(tc, recorder, body) }
         )
     }
 }
 
 /// Checks that the asynchronous `body` holds for every value it draws. See
-/// `property(sourceLocation:_:)`.
+/// `property(examples:sourceLocation:_:)`.
 public func property(
+    examples: [Example] = [],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) async throws -> Void
 ) async throws {
@@ -65,7 +75,11 @@ public func property(
     let runner = PropertyRunner(scope: scope, sourceLocation: sourceLocation)
     if let blob = scope.reproducing {
         try await runner.finish(replaying: blob) { recorder in
-            try await Property.run(settings: scope.settings, reproducing: blob) { tc in
+            try await Property.run(
+                settings: scope.settings,
+                reproducing: blob,
+                output: scope.output
+            ) { tc in
                 try await runner.runCase(tc, recorder, body)
             }
         }
@@ -75,12 +89,52 @@ public func property(
         settings: scope.settings,
         databaseKey: scope.databaseKey,
         location: scope.location,
+        examples: examples,
+        output: scope.output,
         { tc in try await runner.runCase(tc, nil, body) }
     )
-    try await runner.report(outcome) { blob, recorder in
-        try await Property.run(settings: scope.settings, reproducing: blob) { tc in
+    try await runner.report(outcome) { replay, recorder in
+        try await Property.run(
+            settings: replay.settings(scope.settings),
+            reproducing: replay.blob,
+            examples: replay.examples,
+            output: scope.output
+        ) { tc in
             try await runner.runCase(tc, recorder, body)
         }
+    }
+}
+
+/// How a counterexample is run again for its report: by its reproduce blob,
+/// or, for a failing explicit example, by running that example alone.
+enum Replay {
+    case blob(String)
+    case example(Example)
+
+    init?(_ counterexample: PropertyFailure.Counterexample) {
+        if let example = counterexample.example {
+            self = .example(example)
+        } else if let blob = counterexample.reproductionBlob {
+            self = .blob(blob)
+        } else {
+            return nil
+        }
+    }
+
+    var blob: String? {
+        if case .blob(let blob) = self { blob } else { nil }
+    }
+
+    var examples: [Example] {
+        if case .example(let example) = self { [example] } else { [] }
+    }
+
+    /// An example runs alone: only the explicit phase.
+    func settings(_ settings: Settings) -> Settings {
+        guard case .example = self else {
+            return settings
+        }
+        return settings.merging(Settings(phases: .explicit))
     }
 }
 
@@ -152,7 +206,7 @@ struct PropertyRunner {
     /// thrown errors are rethrown together with their report.
     func report(
         _ outcome: PropertyOutcome,
-        replay: (String, CaseRecorder) throws -> PropertyOutcome
+        replay: (Replay, CaseRecorder) throws -> PropertyOutcome
     ) throws {
         guard let failure = outcome.failure else {
             return
@@ -164,8 +218,8 @@ struct PropertyRunner {
                 continue
             }
             let recorder = CaseRecorder(annotation: annotation(for: counterexample))
-            if let blob = counterexample.reproductionBlob {
-                _ = try? replay(blob, recorder)
+            if let how = Replay(counterexample) {
+                _ = try? replay(how, recorder)
             }
             if !recorder.sawFailure {
                 recordFallback(issues, counterexample)
@@ -176,7 +230,7 @@ struct PropertyRunner {
 
     func report(
         _ outcome: PropertyOutcome,
-        replay: (String, CaseRecorder) async throws -> PropertyOutcome
+        replay: (Replay, CaseRecorder) async throws -> PropertyOutcome
     ) async throws {
         guard let failure = outcome.failure else {
             return
@@ -188,8 +242,8 @@ struct PropertyRunner {
                 continue
             }
             let recorder = CaseRecorder(annotation: annotation(for: counterexample))
-            if let blob = counterexample.reproductionBlob {
-                _ = try? await replay(blob, recorder)
+            if let how = Replay(counterexample) {
+                _ = try? await replay(how, recorder)
             }
             if !recorder.sawFailure {
                 recordFallback(issues, counterexample)
@@ -238,7 +292,9 @@ struct PropertyRunner {
     }
 
     private func annotation(for counterexample: PropertyFailure.Counterexample) -> Comment {
-        var lines = ["Falsifying example:"]
+        var lines = [
+            counterexample.example == nil ? "Falsifying example:" : "Falsifying explicit example:"
+        ]
         lines.append(contentsOf: counterexample.drawn.map { "    " + $0 })
         lines.append(contentsOf: counterexample.notes(reproduce: Self.reproduceHint))
         return Comment(rawValue: lines.joined(separator: "\n"))

@@ -144,6 +144,34 @@ as `let xs = 0`. Use `tc.draw(_:named:)` there.
 
 `#draw` comes with `HegelTesting` and builds with swift-syntax.
 
+### Explicit examples
+
+`examples:` runs a property on values you choose, before any generated ones. It is the place
+for the edge cases you know about, and for regressions you want checked on every run:
+
+```swift
+try property(examples: [["xs": [Int]()], ["xs": [3, 1, 2]]]) { tc in
+    let xs = try tc.draw(.array(of: .int()), named: "xs")
+    #expect(mySort(xs) == xs.sorted())
+}
+```
+
+- Each value is keyed by the name its draw is reported under: `xs` for `named: "xs"`, `xs_2`
+  for a second draw with that name, `draw_1`, `draw_2`, ... for unnamed draws. A `#draw` is
+  named after its `let`.
+- A value's type must be the draw's exactly. Give a `Double` draw `1.0`, not `1`.
+- A failing example is reported under `Falsifying explicit example:` with its values, and has no
+  reproduce blob. It ends the run, unless `reportMultipleFailures` is on. Then every example
+  runs, generation follows, and a generated failure with the same origin as an example's is
+  dropped.
+- These are usage errors: a draw with no value, a value no draw took, and rejecting an example
+  with `assume` or `reject`.
+- An example makes no engine calls. `target` and `event` do nothing, `repeat` runs its body
+  once, and `concurrently` runs its workers on the same values. Pools, state machines,
+  `drawSilent` and spans are usage errors.
+- Examples run only when the `explicit` phase is on, which it is by default. A run that replays
+  a reproduce blob skips them.
+
 ### Repeating a body
 
 `tc.repeat` runs a body again and again, for as long as the engine wants. A failure shrinks to
@@ -469,6 +497,15 @@ test_cases = 1_000
 test_cases = 10_000
 ```
 
+The engine writes its own output to standard error: verbose logs, statistics from
+`showStatistics`, health check messages. `output:` sends it somewhere else, one line at a time:
+
+```swift
+@Test(.hegel(Settings(showStatistics: true)) { line in logger.info("\(line)") })
+```
+
+`Property.run` and `Property.check` take `output:` and `examples:` too.
+
 ## Reproducing a failure
 
 Every report ends with a trait that replays the minimal example:
@@ -569,8 +606,6 @@ release's checksums.
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
 - **Not yet wrapped:**
-  - explicit examples
-  - the engine's output callback (engine messages go to stderr)
   - Windows
 
 ## Development

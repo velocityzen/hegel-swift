@@ -195,3 +195,45 @@ struct MissingTraitTests {
         #expect(issues[0].commentText.contains("needs the .hegel trait"))
     }
 }
+
+@Suite("explicit examples and output", .hegel(database: .disabled))
+struct HegelExplicitTests {
+    @Test(.capturingIssues, .hegel)
+    func reportsTheFailingExample() throws {
+        let issues = try capture {
+            try property(examples: [["n": 3]]) { tc in
+                let n = try tc.draw(.int(in: 0...100), named: "n")
+                #expect(n != 3)
+            }
+        }
+        try #require(issues.count == 1)
+        #expect(issues[0].commentText.contains("Falsifying explicit example:\n    let n = 3"))
+        #expect(!issues[0].commentText.contains("reproducing"))
+    }
+
+    @Test(.capturingIssues, .hegel)
+    func passingExamplesThenGeneration() throws {
+        let issues = try capture {
+            try property(examples: [["n": 0], ["n": 100]]) { tc in
+                let n = try tc.draw(.int(in: 0...100), named: "n")
+                #expect(n <= 100)
+            }
+        }
+        #expect(issues.isEmpty)
+    }
+
+    static let output = Mutex<[String]>([])
+
+    @Test(
+        .hegel(Settings(testCases: 10, showStatistics: true)) { line in
+            output.withLock { $0.append(line) }
+        }
+    )
+    func outputTrait() throws {
+        try property { tc in
+            try tc.event("seen")
+        }
+        let lines = Self.output.withLock { $0 }
+        #expect(lines.contains { $0.contains("* seen: 100") })
+    }
+}

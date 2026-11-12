@@ -23,7 +23,14 @@ public enum Property {
     ///     derandomized runs. Give each property a stable, distinct key.
     ///   - location: Where the property is defined.
     ///   - blob: A reproduce blob from a failure report: replay that example
-    ///     instead of exploring.
+    ///     instead of exploring. The explicit examples don't run.
+    ///   - examples: Explicit examples, run first, in order, with the values
+    ///     they give. A failing one ends the run, unless the
+    ///     `reportMultipleFailures` setting is on. They run only when the
+    ///     `explicit` phase is enabled.
+    ///   - output: Receives the engine's output, one line at a time, instead
+    ///     of standard error: statistics, verbose logs and health check
+    ///     messages. It is called on the thread that runs the property.
     /// - Throws: `HegelError` when the run ends without a verdict, such as a
     ///   failed health check.
     public static func run(
@@ -31,47 +38,70 @@ public enum Property {
         databaseKey: String? = nil,
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
+        examples: [Example] = [],
+        output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws(HegelError) -> PropertyOutcome {
         let driver = try RunDriver(
             settings: settings,
             databaseKey: databaseKey,
             location: location,
-            blob: blob
+            blob: blob,
+            output: output
         )
+        var explicitFailures: [PropertyFailure.Counterexample] = []
+        for example in driver.examplesToRun(examples) {
+            let tc = TestCase(example: ExplicitDraws(example))
+            let outcome = Result { try body(tc) }
+            if let failure = try finishExample(tc, outcome) {
+                explicitFailures.append(failure)
+                if !driver.settings.reportMultipleFailures {
+                    return .failed(PropertyFailure(counterexamples: explicitFailures))
+                }
+            }
+        }
         while let tc = try driver.nextTestCase() {
             let outcome = Result { try body(tc) }
             try driver.finish(tc, outcome)
         }
-        return try driver.outcome()
+        return try driver.outcome().adding(explicitFailures)
     }
 
     /// Runs the asynchronous `body` against generated test cases and returns
-    /// the outcome. See `run(settings:databaseKey:location:reproducing:_:)`.
+    /// the outcome. See
+    /// `run(settings:databaseKey:location:reproducing:examples:output:_:)`.
     public static func run(
         settings: Settings = Settings(),
         databaseKey: String? = nil,
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
+        examples: [Example] = [],
+        output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws(HegelError) -> PropertyOutcome {
         let driver = try RunDriver(
             settings: settings,
             databaseKey: databaseKey,
             location: location,
-            blob: blob
+            blob: blob,
+            output: output
         )
-        while let tc = try driver.nextTestCase() {
-            let outcome: Result<Void, any Error>
-            do {
-                try await body(tc)
-                outcome = .success(())
-            } catch {
-                outcome = .failure(error)
+        var explicitFailures: [PropertyFailure.Counterexample] = []
+        for example in driver.examplesToRun(examples) {
+            let tc = TestCase(example: ExplicitDraws(example))
+            let outcome = await result { try await body(tc) }
+            if let failure = try finishExample(tc, outcome) {
+                explicitFailures.append(failure)
+                if !driver.settings.reportMultipleFailures {
+                    return .failed(PropertyFailure(counterexamples: explicitFailures))
+                }
             }
+        }
+        while let tc = try driver.nextTestCase() {
+            let outcome = await result { try await body(tc) }
             try driver.finish(tc, outcome)
         }
-        return try driver.outcome()
+        return try driver.outcome().adding(explicitFailures)
     }
 
     /// Runs `body` against generated test cases, throwing a
@@ -81,6 +111,8 @@ public enum Property {
         databaseKey: String? = nil,
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
+        examples: [Example] = [],
+        output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws {
         let outcome = try run(
@@ -88,6 +120,8 @@ public enum Property {
             databaseKey: databaseKey,
             location: location,
             reproducing: blob,
+            examples: examples,
+            output: output,
             body
         )
         if case .failed(let failure) = outcome {
@@ -102,6 +136,8 @@ public enum Property {
         databaseKey: String? = nil,
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
+        examples: [Example] = [],
+        output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws {
         let outcome = try await run(
@@ -109,10 +145,55 @@ public enum Property {
             databaseKey: databaseKey,
             location: location,
             reproducing: blob,
+            examples: examples,
+            output: output,
             body
         )
         if case .failed(let failure) = outcome {
             throw failure
+        }
+    }
+
+    private static func result(
+        _ body: () async throws -> Void
+    ) async -> Result<Void, any Error> {
+        do {
+            try await body()
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// The failure an explicit example ended with, if it failed.
+    private static func finishExample(
+        _ tc: TestCase,
+        _ outcome: Result<Void, any Error>
+    ) throws(HegelError) -> PropertyFailure.Counterexample? {
+        guard let explicit = tc.explicit else {
+            preconditionFailure("not an explicit example")
+        }
+        switch outcome {
+            case .failure(TestCaseStop.rejected), .failure(TestCaseStop.overrun):
+                throw .usage("Explicit examples must not be rejected")
+            case .failure(let error as HegelError):
+                throw error
+            case .success, .failure(is RepeatFinished):
+                let unused = explicit.unused
+                guard unused.isEmpty else {
+                    throw .usage(
+                        "The explicit example gives values that no draw took: "
+                            + unused.map { "\"\($0)\"" }.joined(separator: ", ")
+                    )
+                }
+                return nil
+            case .failure(let error):
+                return PropertyFailure.Counterexample(
+                    origin: origin(of: error),
+                    error: error,
+                    drawn: tc.readOutput(),
+                    example: explicit.example
+                )
         }
     }
 }
@@ -131,14 +212,28 @@ public enum PropertyOutcome {
         }
         return nil
     }
+
+    /// This outcome with the explicit examples' failures first. A generated
+    /// failure with the same origin as one of them is the same bug, and is
+    /// dropped.
+    func adding(_ explicitFailures: [PropertyFailure.Counterexample]) -> PropertyOutcome {
+        guard !explicitFailures.isEmpty else {
+            return self
+        }
+        let origins = Set(explicitFailures.map(\.origin))
+        let generated = failure?.counterexamples.filter { !origins.contains($0.origin) } ?? []
+        return .failed(PropertyFailure(counterexamples: explicitFailures + generated))
+    }
 }
 
 /// Drives one libhegel run: hands out the test cases the engine schedules,
 /// reports how each ended, and keeps the report material of failing ones.
 final class RunDriver {
     private let context = EngineContext()
-    private let settings: EngineSettings
+    let settings: EngineSettings
     private let run: OpaquePointer
+    /// Kept alive for the run, which calls back into it.
+    private let output: OutputSink?
     private let blob: String?
     private let verbosity: Settings.Verbosity
     private var captures: [String: Capture] = [:]
@@ -153,7 +248,8 @@ final class RunDriver {
         settings: Settings,
         databaseKey: String?,
         location: TestLocation?,
-        blob: String?
+        blob: String?,
+        output: (@Sendable (String) -> Void)?
     ) throws(HegelError) {
         let version = engineVersion
         guard version == expectedEngineVersion else {
@@ -162,6 +258,10 @@ final class RunDriver {
         self.settings = try EngineSettings(settings, databaseKey: databaseKey, location: location)
         self.blob = blob
         verbosity = self.settings.verbosity
+        let output = output.map(OutputSink.init)
+        self.output = output
+        let callback: hegel_output_callback_t? = output == nil ? nil : OutputSink.callback
+        let userData = output.map { Unmanaged.passUnretained($0).toOpaque() }
         var handle: OpaquePointer?
         let engineSettings = self.settings.raw
         let context = self.context
@@ -169,11 +269,13 @@ final class RunDriver {
             if let blob {
                 try blob.withHegelString { (view) throws(EngineError) in
                     try context.call {
-                        hegel_run_start_blob($0, engineSettings, view, nil, nil, &handle)
+                        hegel_run_start_blob($0, engineSettings, view, callback, userData, &handle)
                     }
                 }
             } else {
-                try context.call { hegel_run_start($0, engineSettings, nil, nil, &handle) }
+                try context.call {
+                    hegel_run_start($0, engineSettings, callback, userData, &handle)
+                }
             }
         } catch {
             throw .usage(error.message)
@@ -186,6 +288,12 @@ final class RunDriver {
 
     deinit {
         hegel_run_free(nil, run)
+    }
+
+    /// The explicit examples this run runs: none when it replays a blob or
+    /// the `explicit` phase is off.
+    func examplesToRun(_ examples: [Example]) -> [Example] {
+        blob == nil && settings.phases.contains(.explicit) ? examples : []
     }
 
     func nextTestCase() throws(HegelError) -> TestCase? {
@@ -356,4 +464,24 @@ final class RunDriver {
 struct UncapturedFailure: Error, CustomStringConvertible {
     let origin: String
     var description: String { origin }
+}
+
+/// Where a run sends the engine's output lines.
+final class OutputSink: Sendable {
+    let handler: @Sendable (String) -> Void
+
+    init(_ handler: @escaping @Sendable (String) -> Void) {
+        self.handler = handler
+    }
+
+    /// The C callback: `userData` is an unretained `OutputSink` that the
+    /// run's driver keeps alive.
+    static let callback: hegel_output_callback_t = { userData, line, length in
+        guard let userData else {
+            return
+        }
+        let sink = Unmanaged<OutputSink>.fromOpaque(userData).takeUnretainedValue()
+        let bytes = UnsafeRawBufferPointer(start: line, count: line == nil ? 0 : length)
+        sink.handler(String(decoding: bytes, as: UTF8.self))
+    }
 }

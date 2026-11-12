@@ -86,6 +86,8 @@ public struct PropertyFailure: Error, CustomStringConvertible {
         /// Whether the report includes the reproduce blob, as the
         /// `printBlob` setting asks.
         public var printsReproduction: Bool
+        /// The explicit example that failed, or nil for a generated one.
+        public var example: Example?
 
         public init(
             origin: String,
@@ -93,7 +95,8 @@ public struct PropertyFailure: Error, CustomStringConvertible {
             drawn: [String],
             caveat: String? = nil,
             reproductionBlob: String? = nil,
-            printsReproduction: Bool = true
+            printsReproduction: Bool = true,
+            example: Example? = nil
         ) {
             self.origin = origin
             self.error = error
@@ -101,6 +104,7 @@ public struct PropertyFailure: Error, CustomStringConvertible {
             self.caveat = caveat
             self.reproductionBlob = reproductionBlob
             self.printsReproduction = printsReproduction
+            self.example = example
         }
 
         /// The report for this failure. `reproduce` turns the blob into the
