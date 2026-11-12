@@ -125,6 +125,25 @@ after them.
 Draws throw to end a test case early, when it is rejected or the engine has used up its budget.
 Let those errors propagate.
 
+### Naming draws with `#draw`
+
+Reports show each draw as `let name = value`. `named:` sets the name; `#draw` takes it from the
+`let` or `var` it initializes instead:
+
+```swift
+try property { tc in
+    let xs = try #draw(.array(of: .int()), from: tc)   // tc.draw(.array(of: .int()), named: "xs")
+    #expect(mySort(xs) == xs.sorted())
+}
+```
+
+A draw that doesn't initialize a plain binding (inside a closure, in a tuple pattern, or after
+`_ =`) is unnamed, and the report calls it `draw_1`, `draw_2`, and so on. A draw nested in a
+larger initializer takes that binding's name: `let xs = [try #draw(.int(), from: tc)]` is reported
+as `let xs = 0`. Use `tc.draw(_:named:)` there.
+
+`#draw` comes with `HegelTesting` and builds with swift-syntax.
+
 ## Generators
 
 A `Gen<Value>` is a value. There is no `Arbitrary` protocol: you build generators with functions,
@@ -494,8 +513,6 @@ release's checksums.
   - explicit examples
   - the engine's output callback (engine messages go to stderr)
   - Windows
-- **Draw names.** Names in reports come from `named:`. A macro could take them from the `let`
-  binding, as Rust and OCaml do.
 
 ## Development
 

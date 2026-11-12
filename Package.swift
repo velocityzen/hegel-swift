@@ -1,5 +1,6 @@
 // swift-tools-version: 6.3
 
+import CompilerPluginSupport
 import Foundation
 import PackageDescription
 
@@ -58,6 +59,11 @@ let package = Package(
         .library(name: "Hegel", targets: ["Hegel"]),
         .library(name: "HegelTesting", targets: ["HegelTesting"]),
     ],
+    dependencies: [
+        // For the `#draw` macro in HegelTesting. The range is wide so that a
+        // package with its own macros can share one swift-syntax.
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", "603.0.0"..<"700.0.0")
+    ],
     targets: [
         engine,
         .target(
@@ -65,9 +71,17 @@ let package = Package(
             dependencies: [.target(name: engine.name)],
             swiftSettings: swiftSettings
         ),
+        .macro(
+            name: "HegelMacros",
+            dependencies: [
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+            ],
+            swiftSettings: swiftSettings
+        ),
         .target(
             name: "HegelTesting",
-            dependencies: ["Hegel"],
+            dependencies: ["Hegel", "HegelMacros"],
             swiftSettings: swiftSettings
         ),
         .testTarget(
