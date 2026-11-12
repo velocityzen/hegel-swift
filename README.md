@@ -144,6 +144,64 @@ as `let xs = 0`. Use `tc.draw(_:named:)` there.
 
 `#draw` comes with `HegelTesting` and builds with swift-syntax.
 
+### Repeating a body
+
+`tc.repeat` runs a body again and again, for as long as the engine wants. A failure shrinks to
+the fewest iterations that show it, the way an array shrinks to the fewest elements. It suits a
+sequence of operations that doesn't need a full [state machine](#stateful-testing):
+
+```swift
+try property { tc in
+    var stack = MyStack()
+    try tc.repeat { tc in
+        let x = try tc.draw(.int(), named: "x")
+        stack.push(x)
+        #expect(stack.top == x)
+    }
+}
+```
+
+In a report, each iteration's draws sit under a heading, and draw names carry on from one
+iteration to the next:
+
+```
+// Repetition #1
+  let x = 0
+// Repetition #2
+  let x_2 = 1
+```
+
+- An iteration that fails an assumption is skipped, and the loop goes on.
+- `repeat` never returns. When the engine ends the loop, it throws to end the test case as
+  passed, so put nothing after it and let the error propagate.
+- A passing loop runs until the test case's budget is used up, often many thousands of
+  iterations. Keep the body cheap, or run fewer test cases.
+- Async bodies work too: `try await tc.repeat { tc in ... }`.
+
+### Drawing from several threads
+
+`tc.concurrently(workers:)` runs a body on that many tasks at once, each on its own thread and
+its own clone of the test case, and returns their results in worker order:
+
+```swift
+try await property { tc in
+    let counter = MyAtomicCounter()
+    let added = try await tc.concurrently(workers: 4) { worker, tc in
+        let n = try tc.draw(.int(in: 0...100), named: "n")
+        counter.add(n)
+        return n
+    }
+    #expect(counter.value == added.reduce(0, +))
+}
+```
+
+- Each clone draws from its own stream of choices, so what a worker draws doesn't depend on
+  scheduling, and failures replay and shrink as usual. Races in your own code may still not
+  reproduce every time.
+- Report lines are prefixed with the worker and the time, as in `[worker 1 +0.013ms] let n = 4`.
+- The workers are one test case. A worker that is rejected rejects it; otherwise the
+  lowest-numbered worker's failure fails it, and the other workers' failures are noted.
+
 ## Generators
 
 A `Gen<Value>` is a value. There is no `Arbitrary` protocol: you build generators with functions,
@@ -163,6 +221,10 @@ and give a type as many generators as you need.
 | Choices | `.just(value)`, `.element(of:)`, `.oneOf(...)`, `.optional(gen)`, `Gen<E>.allCases` |
 | Recursion | `.recursive(maxDepth:maxLeaves:leaf:branch:)`, `.deferred { gen }` |
 | Combinators | `map`, `flatMap`, `filter`, `zip(a, b, ...)`, `a.zip(b, combine)`, `printed(with:)` |
+
+Text, regex and grammar generators follow the Unicode version of the Swift standard library the
+tests run with, so their categories and character classes agree with `Character` and
+`Unicode.Scalar.Properties`.
 
 ```swift
 struct User { var name: String; var age: Int }
@@ -507,9 +569,6 @@ release's checksums.
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
 - **Not yet wrapped:**
-  - repeated sections in reports (`hegel_new_repeat`)
-  - choosing the Unicode version for patterns (`hegel_set_unicode_version`)
-  - drawing from several threads outside a concurrent state machine
   - explicit examples
   - the engine's output callback (engine messages go to stderr)
   - Windows

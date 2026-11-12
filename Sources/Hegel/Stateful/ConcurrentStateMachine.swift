@@ -176,7 +176,7 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
                 clones.append(Handoff(value: try tc.clone(worker: worker)))
             }
             let outcomes = await runRound(clones, model, machine)
-            try resolve(outcomes, tc)
+            try resolveWorkers(outcomes, tc)
             try await checkInvariants(model, tc, machine, sampling: true)
         }
 
@@ -199,7 +199,7 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
                     (worker, await Self.work(worker, clone, model, rules, machine))
                 }
             }
-            var outcomes = [WorkerOutcome](repeating: .roundDone, count: clones.count)
+            var outcomes = [WorkerOutcome](repeating: .done, count: clones.count)
             for await (worker, outcome) in group {
                 outcomes[worker] = outcome
             }
@@ -241,7 +241,7 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
                     throw error
                 }
             }
-            return tc.hasRecordedFailure() ? .recordedFailure : .roundDone
+            return tc.hasRecordedFailure() ? .recordedFailure : .done
         } catch TestCaseStop.rejected {
             return .rejected
         } catch TestCaseStop.overrun {
@@ -250,39 +250,6 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
             return .engineError(error)
         } catch {
             return .failed(error)
-        }
-    }
-
-    /// Ends the test case if a worker's round did: an engine error first,
-    /// then a stop, then the lowest-numbered worker's failure. The failures
-    /// of other workers are noted in the report.
-    private func resolve(_ outcomes: [WorkerOutcome], _ tc: TestCase) throws {
-        var failures: [(worker: Int, error: any Error)] = []
-        var stop: TestCaseStop?
-        var recorded = false
-        for (worker, outcome) in outcomes.enumerated() {
-            switch outcome {
-                case .roundDone: break
-                case .engineError(let error): throw error
-                case .overrun: stop = .overrun
-                case .rejected: stop = stop ?? .rejected
-                case .recordedFailure: recorded = true
-                case .failed(let error): failures.append((worker, error))
-            }
-        }
-        let dropped = stop == nil ? failures.dropFirst() : failures[...]
-        for failure in dropped {
-            tc.note("Dropped concurrent failure from worker \(failure.worker): \(failure.error)")
-        }
-        if let stop {
-            tc.stop = stop
-            throw stop
-        }
-        if let first = failures.first {
-            throw first.error
-        }
-        if recorded {
-            throw StopAfterRecordedFailure()
         }
     }
 
@@ -311,16 +278,4 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
             }
         }
     }
-}
-
-/// How a worker's round ended.
-enum WorkerOutcome: Sendable {
-    case roundDone
-    /// A rule failed an `#expect` (or the like) that the test framework
-    /// recorded.
-    case recordedFailure
-    case rejected
-    case overrun
-    case engineError(HegelError)
-    case failed(any Error)
 }

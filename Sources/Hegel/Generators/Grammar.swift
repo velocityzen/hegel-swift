@@ -119,6 +119,7 @@ private final class GrammarHandle: @unchecked Sendable {
         maxSize: UInt64,
         maxDepth: UInt32
     ) {
+        unicodeVersionSet
         let context = EngineContext()
         do {
             let builder = try Self.gather(lark, imports: imports, context)

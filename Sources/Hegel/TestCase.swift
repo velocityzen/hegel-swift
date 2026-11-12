@@ -1,4 +1,5 @@
 import CHegel
+import Synchronization
 
 /// One execution of a property, and the values drawn for it.
 ///
@@ -22,8 +23,9 @@ public final class TestCase {
     let printsOutput: Bool
 
     private var rootPrinter: Printer?
-    private var drawNumber = 0
-    private var usedNames: [String: Int] = [:]
+    /// The names this handle's draws are shown under. Shared with clones
+    /// and with the iterations of `repeat`, fresh for a state machine step.
+    private let names: DrawNames
     private var nesting = 0
     /// The number of spans this handle has open.
     private(set) var spanDepth = 0
@@ -33,10 +35,16 @@ public final class TestCase {
     /// to stop at the failing step.
     package var hasRecordedFailure: () -> Bool = { false }
 
-    init(raw: OpaquePointer, context: EngineContext, printsOutput: Bool) {
+    init(
+        raw: OpaquePointer,
+        context: EngineContext,
+        printsOutput: Bool,
+        names: DrawNames = DrawNames()
+    ) {
         self.raw = raw
         self.context = context
         self.printsOutput = printsOutput
+        self.names = names
     }
 
     deinit {
@@ -54,22 +62,33 @@ public final class TestCase {
         guard let handle else {
             throw HegelError.engine("libhegel returned no test case clone")
         }
-        let clone = TestCase(raw: handle, context: EngineContext(), printsOutput: printsOutput)
+        let clone = TestCase(
+            raw: handle,
+            context: EngineContext(),
+            printsOutput: printsOutput,
+            names: names
+        )
         clone.hasRecordedFailure = hasRecordedFailure
         try clone.call { hegel_test_case_set_worker($0, handle, Int64(worker)) }
         return clone
     }
 
     /// A handle onto this case's choices whose output is an indented block
-    /// at the current position of this one's, with its own draw names: the
-    /// body of a state machine step under its heading.
-    func block(indent: Int) throws -> TestCase {
+    /// at the current position of this one's: the body of a state machine
+    /// step or a `repeat` iteration under its heading. A step's draws are
+    /// named afresh; an iteration's carry on from this handle's.
+    func block(indent: Int, sharingNames: Bool = false) throws -> TestCase {
         var handle: OpaquePointer?
         try call { hegel_test_case_block($0, raw, UInt64(indent), &handle) }
         guard let handle else {
             throw HegelError.engine("libhegel returned no block handle")
         }
-        let block = TestCase(raw: handle, context: context, printsOutput: printsOutput)
+        let block = TestCase(
+            raw: handle,
+            context: context,
+            printsOutput: printsOutput,
+            names: sharingNames ? names : DrawNames()
+        )
         block.hasRecordedFailure = hasRecordedFailure
         return block
     }
@@ -110,7 +129,7 @@ public final class TestCase {
         guard printsOutput, nesting == 0 else {
             return try drawSilent(generator)
         }
-        let displayName = allocateName(name)
+        let displayName = names.allocate(name)
         let printer = self.printer
         return try printer.speculate {
             printer.text("let \(displayName) = ")
@@ -138,16 +157,6 @@ public final class TestCase {
         let value = try generator.body(self, printer)
         try stopSpan()
         return value
-    }
-
-    private func allocateName(_ name: String?) -> String {
-        guard let name else {
-            drawNumber += 1
-            return "draw_\(drawNumber)"
-        }
-        let count = usedNames[name, default: 0] + 1
-        usedNames[name] = count
-        return count == 1 ? name : "\(name)_\(count)"
     }
 
     // MARK: - Control
@@ -387,4 +396,28 @@ public enum TestCaseStop: Error, Sendable {
     case rejected
     /// The engine used up its choice budget for the case.
     case overrun
+}
+
+/// The names draws are shown under in a report: `draw_1`, `draw_2`, ... for
+/// unnamed ones, and a numbered suffix for a name used again. Clones on
+/// other threads share it, hence the lock.
+final class DrawNames: Sendable {
+    private struct State {
+        var drawNumber = 0
+        var used: [String: Int] = [:]
+    }
+
+    private let state = Mutex(State())
+
+    func allocate(_ name: String?) -> String {
+        state.withLock { state in
+            guard let name else {
+                state.drawNumber += 1
+                return "draw_\(state.drawNumber)"
+            }
+            let count = state.used[name, default: 0] + 1
+            state.used[name] = count
+            return count == 1 ? name : "\(name)_\(count)"
+        }
+    }
 }

@@ -219,7 +219,7 @@ final class RunDriver {
                 status = HEGEL_STATUS_INVALID
             case (_, .overrun?):
                 status = HEGEL_STATUS_OVERRUN
-            case (.success, nil):
+            case (.success, nil), (.failure(is RepeatFinished), nil):
                 break
             // A stop thrown from a block handle, such as a state machine
             // step's, that the root handle did not see.

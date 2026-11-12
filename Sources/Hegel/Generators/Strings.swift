@@ -55,6 +55,7 @@ final class StringGeneratorHandle: @unchecked Sendable {
     let failure: String?
 
     init(_ build: (OpaquePointer, inout OpaquePointer?) -> hegel_result_t) {
+        unicodeVersionSet
         let context = EngineContext()
         var handle: OpaquePointer?
         let code = build(context.raw, &handle)
