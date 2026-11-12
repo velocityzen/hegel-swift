@@ -12,6 +12,17 @@ private func cancelledAfterEach(_ count: Int, _ cancellation: Cancellation) -> [
     }
 }
 
+/// Lends the test case to a task that the property body awaits before it
+/// goes on. Swift's region checks can't see that this is safe.
+private final class CallerTask: @unchecked Sendable {
+    let tc: TestCase
+    let started = Atomic(false)
+
+    init(_ tc: TestCase) {
+        self.tc = tc
+    }
+}
+
 @Suite("withRandomCancellation")
 struct CancellationTests {
     @Test("cancels right after the drawn checkpoint, before the first, or never")
@@ -125,20 +136,17 @@ struct CancellationTests {
     func callerCancellation() async throws {
         let outcome = try await Property.run(settings: isolated.merging(Settings(testCases: 5))) {
             tc in
-            let started = Atomic(false)
-            // The caller task only borrows the test case: this body awaits
-            // it before going on.
-            nonisolated(unsafe) let tc = tc
-            let caller = Task {
-                try await tc.withRandomCancellation(checkpoints: 0...0) { _ in
-                    started.store(true, ordering: .sequentiallyConsistent)
+            let caller = CallerTask(tc)
+            let task = Task {
+                try await caller.tc.withRandomCancellation(checkpoints: 0...0) { _ in
+                    caller.started.store(true, ordering: .sequentiallyConsistent)
                     while !Task.isCancelled { await Task.yield() }
                     return true
                 }
             }
-            while !started.load(ordering: .sequentiallyConsistent) { await Task.yield() }
-            caller.cancel()
-            let run = try await caller.value
+            while !caller.started.load(ordering: .sequentiallyConsistent) { await Task.yield() }
+            task.cancel()
+            let run = try await task.value
             if !run.value {
                 throw Failed()
             }
