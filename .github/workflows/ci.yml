@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+env:
+  # swiftly (swift.org's toolchain installer) for the jobs that install Swift
+  # on macOS. The versioned .pkg is pinned and checked, so a new swiftly
+  # release cannot change CI unnoticed.
+  SWIFTLY_VERSION: "1.2.0"
+  SWIFTLY_SHA256: a1b48692b00ea6902957423473c87bee7c7f3e18c015a4a09317102f6820b987
+  SWIFT_VERSION: "6.4"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/swiftly.pkg" "https://download.swift.org/swiftly/darwin/swiftly-$SWIFTLY_VERSION.pkg"
+          echo "$SWIFTLY_SHA256  $RUNNER_TEMP/swiftly.pkg" | shasum -a 256 -c -
+          installer -pkg "$RUNNER_TEMP/swiftly.pkg" -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --assume-yes --quiet-shell-followup --skip-install
+          . "$HOME/.swiftly/env.sh"
+          swiftly install --assume-yes --use "$SWIFT_VERSION"
+          echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: swift format lint --strict --recursive Sources Tests Package.swift
+
+  # The test jobs package the libhegel named in LIBHEGEL_VERSION locally, so
+  # they test exactly that engine whether or not its release assets exist.
+  test-macos:
+    name: macOS tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/swiftly.pkg" "https://download.swift.org/swiftly/darwin/swiftly-$SWIFTLY_VERSION.pkg"
+          echo "$SWIFTLY_SHA256  $RUNNER_TEMP/swiftly.pkg" | shasum -a 256 -c -
+          installer -pkg "$RUNNER_TEMP/swiftly.pkg" -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --assume-yes --quiet-shell-followup --skip-install
+          . "$HOME/.swiftly/env.sh"
+          swiftly install --assume-yes --use "$SWIFT_VERSION"
+          echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
+
+      - name: Package libhegel
+        run: Scripts/package-libhegel.sh
+
+      - name: The checked-in header matches the release
+        run: git diff --exit-code libhegel/hegel.h
+
+      - name: Run tests
+        run: swift test
+
+  test-linux:
+    name: Linux tests (Swift ${{ matrix.swift }}, ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 6.3 is the package's swift-tools-version, the oldest compiler it
+        # claims to support; 6.4 is the compiler the other jobs use.
+        swift: ["6.3", "6.4"]
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    container:
+      image: swift:${{ matrix.swift }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packaging tools
+        run: apt-get update && apt-get install -y --no-install-recommends curl zip ca-certificates
+
+      - name: Package libhegel
+        run: Scripts/package-libhegel.sh
+
+      - name: Run tests
+        run: swift test
+
+  # What a package that depends on hegel-swift gets: the binary targets from
+  # the release URLs in Package.swift, checked against their checksums.
+  release-artifacts:
+    name: Release artifacts resolve
+    if: github.event_name == 'push'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/swiftly.pkg" "https://download.swift.org/swiftly/darwin/swiftly-$SWIFTLY_VERSION.pkg"
+          echo "$SWIFTLY_SHA256  $RUNNER_TEMP/swiftly.pkg" | shasum -a 256 -c -
+          installer -pkg "$RUNNER_TEMP/swiftly.pkg" -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --assume-yes --quiet-shell-followup --skip-install
+          . "$HOME/.swiftly/env.sh"
+          swiftly install --assume-yes --use "$SWIFT_VERSION"
+          echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
+
+      - name: Build from the released binaries
+        run: swift build

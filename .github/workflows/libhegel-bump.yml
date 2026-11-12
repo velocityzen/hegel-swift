@@ -1,0 +1,185 @@
+name: libhegel bump
+
+# Follows libhegel releases: when hegeldev/hegel publishes a newer
+# `libhegel/<version>`, package it, test it on macOS and Linux, publish the
+# SwiftPM binaries as this repository's `libhegel-<version>` release, and open
+# a pull request that moves Package.swift to them. The pull request's diff of
+# libhegel/hegel.h is the engine's ABI change to review.
+#
+# Pull requests opened with the default GITHUB_TOKEN do not start other
+# workflows. To have CI run on the bump PR too, add a fine-grained token with
+# contents and pull-request write access as the BUMP_TOKEN secret.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "libhegel version to move to; the latest release when empty"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SWIFTLY_VERSION: "1.2.0"
+  SWIFTLY_SHA256: a1b48692b00ea6902957423473c87bee7c7f3e18c015a4a09317102f6820b987
+  SWIFT_VERSION: "6.4"
+
+jobs:
+  check:
+    name: Find the latest libhegel
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+      needed: ${{ steps.find.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            latest="$REQUESTED"
+          else
+            latest="$(gh release list -R hegeldev/hegel --limit 100 --json tagName \
+              --jq '[.[] | select(.tagName | startswith("libhegel/"))][0].tagName' \
+              | sed 's|^libhegel/||')"
+          fi
+          current="$(tr -d '[:space:]' < LIBHEGEL_VERSION)"
+          echo "current=$current latest=$latest"
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+          # A version asked for by hand is always (re)published, which is how
+          # the first release of the binaries is made.
+          if [ -n "$REQUESTED" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$latest" ] && [ "$latest" != "$current" ] \
+            && ! gh pr list --head "libhegel/$latest" --state open --json number --jq '.[0]' | grep -q .; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    name: Package and test on macOS
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/swiftly.pkg" "https://download.swift.org/swiftly/darwin/swiftly-$SWIFTLY_VERSION.pkg"
+          echo "$SWIFTLY_SHA256  $RUNNER_TEMP/swiftly.pkg" | shasum -a 256 -c -
+          installer -pkg "$RUNNER_TEMP/swiftly.pkg" -target CurrentUserHomeDirectory
+          ~/.swiftly/bin/swiftly init --assume-yes --quiet-shell-followup --skip-install
+          . "$HOME/.swiftly/env.sh"
+          swiftly install --assume-yes --use "$SWIFT_VERSION"
+          echo "$HOME/.swiftly/bin" >> "$GITHUB_PATH"
+
+      - name: Package libhegel ${{ needs.check.outputs.version }}
+        run: Scripts/bump-libhegel.sh "${{ needs.check.outputs.version }}"
+
+      - name: Run tests
+        run: swift test
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: libhegel
+          path: |
+            Artifacts/CHegel.xcframework.zip
+            Artifacts/CHegel.artifactbundle.zip
+            Artifacts/checksums.env
+
+  test-linux:
+    name: Test on Linux (${{ matrix.runner }})
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    container:
+      image: swift:6.4
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packaging tools
+        run: apt-get update && apt-get install -y --no-install-recommends curl zip ca-certificates
+
+      - name: Package libhegel ${{ needs.check.outputs.version }}
+        run: Scripts/bump-libhegel.sh "${{ needs.check.outputs.version }}"
+
+      - name: Run tests
+        run: swift test
+
+  publish:
+    name: Publish binaries and open the PR
+    needs: [check, package, test-linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.BUMP_TOKEN || github.token }}
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: libhegel
+          path: Artifacts
+
+      # The release holds the exact zips whose checksums go into
+      # Package.swift.
+      - name: Publish the libhegel-${{ env.VERSION }} release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="libhegel-$VERSION"
+          if ! gh release view "$tag" > /dev/null 2>&1; then
+            gh release create "$tag" --latest=false \
+              --title "libhegel $VERSION binaries" \
+              --notes "SwiftPM binary targets for libhegel $VERSION, repackaged from https://github.com/hegeldev/hegel/releases/tag/libhegel/$VERSION."
+          fi
+          gh release upload "$tag" --clobber \
+            Artifacts/CHegel.xcframework.zip Artifacts/CHegel.artifactbundle.zip
+
+      - name: Update the package
+        run: |
+          curl -fsSL -o libhegel/hegel.h \
+            "https://github.com/hegeldev/hegel/releases/download/libhegel/$VERSION/hegel.h"
+          Scripts/bump-libhegel.sh --apply Artifacts/checksums.env
+          rm -rf Artifacts
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ secrets.BUMP_TOKEN || github.token }}
+        run: |
+          branch="libhegel/$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add LIBHEGEL_VERSION Package.swift libhegel/hegel.h Sources/Hegel/Engine/EngineVersion.swift
+          if git diff --cached --quiet; then
+            echo "Nothing to change"
+            exit 0
+          fi
+          git commit -m "Move to libhegel $VERSION"
+          git push --force origin "$branch"
+          if gh pr list --head "$branch" --state open --json number --jq '.[0]' | grep -q .; then
+            exit 0
+          fi
+          gh pr create --head "$branch" --title "Move to libhegel $VERSION" --body "$(cat << EOF
+          Moves hegel-swift to [libhegel $VERSION](https://github.com/hegeldev/hegel/releases/tag/libhegel/$VERSION).
+
+          - The SwiftPM binaries are published as the \`libhegel-$VERSION\` release of this repository; Package.swift now points at them.
+          - Tests passed against this engine on macOS and Linux (amd64, arm64) before this PR was opened.
+          - Review the diff of \`libhegel/hegel.h\` for ABI changes that the Swift layer should follow.
+          EOF
+          )"

@@ -1,0 +1,16 @@
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+.claude
+
+# libhegel packaged locally by Scripts/package-libhegel.sh. Releases
+# download it instead (see Package.swift).
+/Artifacts
+
+# Failing examples Hegel stores between runs.
+.hegel/
