@@ -230,6 +230,38 @@ try await property { tc in
 - The workers are one test case. A worker that is rejected rejects it; otherwise the
   lowest-numbered worker's failure fails it, and the other workers' failures are noted.
 
+### Cancelling at random points
+
+`tc.withRandomCancellation` runs a body in a task and cancels that task right after a drawn
+checkpoint. Call `cancellation.checkpoint()` wherever a cancel is interesting, usually from the
+closures you hand to the code under test:
+
+```swift
+try await property { tc in
+    let run = try await tc.withRandomCancellation { cancellation in
+        let log = EventLog(onEvent: { cancellation.checkpoint($0) })
+        return await resource.use(log: log)
+    }
+    #expect(run.value.everythingReleased)
+    #expect(run.cancelledAt == nil || run.value.sawCancellation)
+}
+```
+
+- The drawn point N runs from 0, which cancels before the body starts, to the last checkpoint.
+  The cancel happens inside the Nth `checkpoint()` call, so whatever runs after it sees
+  `Task.isCancelled`. Sometimes the task isn't cancelled at all.
+- Pass `checkpoints: 0...count` when you know how many there will be, so every cancel lands on
+  one. Without it, N is drawn from any `Int`, mostly small ones, and a point past the last
+  checkpoint means no cancel.
+- Failures shrink to the earliest checkpoint that still fails, or to no cancel when the failure
+  doesn't need one. The report says where the cancel landed:
+  `// Cancelled after checkpoint 4 of 6 (dispose 2)`.
+- `checkpoint()` works from any task, synchronous code included, and still cancels the body's
+  task. When several tasks reach checkpoints at once, which one is the Nth depends on scheduling.
+- The result carries `value`, `cancelledAt` and `checkpoints`; `run.isCancelled(after: n)` says
+  whether code after the nth checkpoint saw the cancel. Cancelling the caller cancels the body
+  too. The body can't draw: draw what it needs first.
+
 ## Generators
 
 A `Gen<Value>` is a value. There is no `Arbitrary` protocol: you build generators with functions,
