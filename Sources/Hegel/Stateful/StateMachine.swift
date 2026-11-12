@@ -36,9 +36,15 @@ import CHegel
 /// many properties as you like. The model is a fresh copy for every test
 /// case; put the system under test in it, created per run.
 ///
+/// Rules and invariants may be `async`. A machine with any async ones runs
+/// with `try await machine.run(tc, from:)`, in an async property.
+///
 /// A rule that rejects its test case, with `assume`, `reject` or a draw
 /// from an empty `Pool`, is skipped instead: the machine goes on to
 /// another rule.
+///
+/// For rules that run at the same time on a shared model, use
+/// `ConcurrentStateMachine`.
 public struct StateMachine<Model>: Sendable {
     /// The number of steps the engine aims for in each test case.
     public var steps: Int
@@ -49,13 +55,23 @@ public struct StateMachine<Model>: Sendable {
     struct Rule: Sendable {
         let name: String
         let weight: Double
-        let apply: @Sendable (inout Model, TestCase) throws -> Void
+        let body: Body
+
+        enum Body: Sendable {
+            case sync(@Sendable (inout Model, TestCase) throws -> Void)
+            case async(@Sendable (inout Model, TestCase) async throws -> Void)
+        }
     }
 
     struct Invariant: Sendable {
         let name: String
         let everyStep: Bool
-        let check: @Sendable (Model, TestCase) throws -> Void
+        let body: Body
+
+        enum Body: Sendable {
+            case sync(@Sendable (Model, TestCase) throws -> Void)
+            case async(@Sendable (Model, TestCase) async throws -> Void)
+        }
     }
 
     /// A machine with no rules yet, aiming for `steps` steps per test case.
@@ -76,10 +92,17 @@ public struct StateMachine<Model>: Sendable {
         weight: Double = 1,
         _ apply: @escaping @Sendable (_ model: inout Model, _ tc: TestCase) throws -> Void
     ) -> StateMachine {
-        precondition(weight.isFinite && weight > 0, "a rule's weight must be finite and positive")
-        var machine = self
-        machine.rules.append(Rule(name: name, weight: weight, apply: apply))
-        return machine
+        adding(Rule(name: name, weight: weight, body: .sync(apply)))
+    }
+
+    /// Adds an async rule. A machine with async rules runs with
+    /// `try await run(_:from:)`.
+    public func rule(
+        _ name: String,
+        weight: Double = 1,
+        _ apply: @escaping @Sendable (_ model: inout Model, _ tc: TestCase) async throws -> Void
+    ) -> StateMachine {
+        adding(Rule(name: name, weight: weight, body: .async(apply)))
     }
 
     /// Adds an invariant: a check of the model.
@@ -94,9 +117,43 @@ public struct StateMachine<Model>: Sendable {
         everyStep: Bool = false,
         _ check: @escaping @Sendable (_ model: Model, _ tc: TestCase) throws -> Void
     ) -> StateMachine {
+        adding(Invariant(name: name, everyStep: everyStep, body: .sync(check)))
+    }
+
+    /// Adds an async invariant. A machine with async invariants runs with
+    /// `try await run(_:from:)`.
+    public func invariant(
+        _ name: String,
+        everyStep: Bool = false,
+        _ check: @escaping @Sendable (_ model: Model, _ tc: TestCase) async throws -> Void
+    ) -> StateMachine {
+        adding(Invariant(name: name, everyStep: everyStep, body: .async(check)))
+    }
+
+    private func adding(_ rule: Rule) -> StateMachine {
+        precondition(
+            rule.weight.isFinite && rule.weight > 0,
+            "a rule's weight must be finite and positive"
+        )
         var machine = self
-        machine.invariants.append(Invariant(name: name, everyStep: everyStep, check: check))
+        machine.rules.append(rule)
         return machine
+    }
+
+    private func adding(_ invariant: Invariant) -> StateMachine {
+        var machine = self
+        machine.invariants.append(invariant)
+        return machine
+    }
+
+    /// Whether any rule or invariant is async.
+    var isAsync: Bool {
+        rules.contains {
+            if case .async = $0.body { true } else { false }
+        }
+            || invariants.contains {
+                if case .async = $0.body { true } else { false }
+            }
     }
 
     /// Runs the machine from `model` in test case `tc`, and returns the
@@ -113,188 +170,215 @@ public struct StateMachine<Model>: Sendable {
     /// }
     /// Rule pop failed:
     /// ```
+    ///
+    /// A machine with async rules or invariants throws a usage error here;
+    /// run it with `try await`.
     @discardableResult
     public func run(_ tc: TestCase, from model: Model) throws -> Model {
-        precondition(!rules.isEmpty, "a state machine needs at least one rule")
-        let machine = try MachineHandle(tc, steps: steps, rules: rules, invariants: invariants)
+        guard !isAsync else {
+            throw HegelError.usage(
+                "this state machine has async rules or invariants; run it with `try await machine.run(tc, from:)`"
+            )
+        }
+        let run = try SequentialRun(self, tc)
         var model = model
+        try checkInvariants(model, run, sampling: false)
+        while try run.beginRound() {
+            while let (rule, block) = try run.nextStep() {
+                guard case .sync(let apply) = rule.body else {
+                    preconditionFailure("async rule in a sync run")
+                }
+                var failure: (any Error)?
+                do {
+                    try apply(&model, block)
+                } catch {
+                    failure = error
+                }
+                try run.finishStep(rule, block, failure)
+            }
+            try run.endRound()
+            try checkInvariants(model, run, sampling: true)
+        }
+        try checkInvariants(model, run, sampling: false, final: true)
+        return model
+    }
 
+    /// Runs the machine from `model` in test case `tc`, awaiting its async
+    /// rules and invariants, and returns the final model.
+    @discardableResult
+    public func run(_ tc: TestCase, from model: Model) async throws -> Model {
+        let run = try SequentialRun(self, tc)
+        var model = model
+        try await checkInvariants(model, run, sampling: false)
+        while try run.beginRound() {
+            while let (rule, block) = try run.nextStep() {
+                var failure: (any Error)?
+                do {
+                    switch rule.body {
+                        case .sync(let apply): try apply(&model, block)
+                        case .async(let apply): try await apply(&model, block)
+                    }
+                } catch {
+                    failure = error
+                }
+                try run.finishStep(rule, block, failure)
+            }
+            try run.endRound()
+            try await checkInvariants(model, run, sampling: true)
+        }
+        try await checkInvariants(model, run, sampling: false, final: true)
+        return model
+    }
+
+    private func checkInvariants(
+        _ model: Model,
+        _ run: SequentialRun<Model>,
+        sampling: Bool,
+        final: Bool = false
+    ) throws {
+        for invariant in try run.dueInvariants(sampling: sampling, final: final) {
+            guard case .sync(let check) = invariant.body else {
+                preconditionFailure("async invariant in a sync run")
+            }
+            let block = try run.tc.block(indent: 2)
+            var failure: (any Error)?
+            do {
+                try check(model, block)
+            } catch {
+                failure = error
+            }
+            try run.finishCheck(invariant, block, failure)
+        }
+    }
+
+    private func checkInvariants(
+        _ model: Model,
+        _ run: SequentialRun<Model>,
+        sampling: Bool,
+        final: Bool = false
+    ) async throws {
+        for invariant in try run.dueInvariants(sampling: sampling, final: final) {
+            let block = try run.tc.block(indent: 2)
+            var failure: (any Error)?
+            do {
+                switch invariant.body {
+                    case .sync(let check): try check(model, block)
+                    case .async(let check): try await check(model, block)
+                }
+            } catch {
+                failure = error
+            }
+            try run.finishCheck(invariant, block, failure)
+        }
+    }
+}
+
+/// The bookkeeping of one sequential run, shared by the sync and async
+/// runners: rounds, step headings, rejected steps, and failures.
+final class SequentialRun<Model> {
+    let tc: TestCase
+    private let machine: MachineHandle
+    private let rules: [StateMachine<Model>.Rule]
+    private let invariants: [StateMachine<Model>.Invariant]
+    private var step = 0
+    private var roundRejected = false
+
+    init(_ definition: StateMachine<Model>, _ tc: TestCase) throws {
+        precondition(!definition.rules.isEmpty, "a state machine needs at least one rule")
+        self.tc = tc
+        rules = definition.rules
+        invariants = definition.invariants
+        machine = try MachineHandle(
+            tc,
+            concurrency: 1...1,
+            steps: definition.steps,
+            rules: rules.map { RuleDeclaration(name: $0.name, weight: $0.weight, groups: [0]) },
+            invariants: invariants.map { ($0.name, $0.everyStep) }
+        )
         if !invariants.isEmpty {
             tc.note("Checking invariants on the initial state.")
         }
-        try checkInvariants(model, tc, sampling: nil)
+    }
 
-        var step = 0
-        while true {
-            try tc.startSpan(.stateMachineRule)
-            guard try machine.nextRound(tc) else {
-                try tc.stopSpan()
-                break
-            }
-            var rejected = false
-            // At concurrency 1 the engine hands out one rule per round, but
-            // that is its policy, not the protocol: pull rules until the join
-            // point.
-            while let index = try machine.nextRule(tc) {
-                guard rules.indices.contains(index) else {
-                    throw HegelError.engine("libhegel chose rule \(index) of \(rules.count)")
-                }
-                let rule = rules[index]
-                step += 1
-                tc.note("Step \(step): \(rule.name) {")
-                let stepCase = try tc.block(indent: 2)
-                do {
-                    try rule.apply(&model, stepCase)
-                } catch TestCaseStop.rejected {
-                    try machine.ruleRejected(tc)
-                    rejected = true
-                    stepCase.note("Rule stopped early due to violated assumption.")
-                    tc.note("}")
-                    continue
-                } catch {
-                    tc.note("}")
-                    try fail("Rule \(rule.name) failed:", error, tc, stepCase)
-                }
+    /// Starts a round; false when the machine is done.
+    func beginRound() throws -> Bool {
+        try tc.startSpan(.stateMachineRule)
+        guard try machine.nextRound(tc) != nil else {
+            try tc.stopSpan()
+            return false
+        }
+        roundRejected = false
+        return true
+    }
+
+    /// The next rule of the round, with the block handle it runs on, or
+    /// nil at the round's end. At concurrency 1 the engine hands out one
+    /// rule per round, but that is its policy, not the protocol.
+    func nextStep() throws -> (StateMachine<Model>.Rule, TestCase)? {
+        guard let index = try machine.nextRule(tc) else {
+            return nil
+        }
+        guard rules.indices.contains(index) else {
+            throw HegelError.engine("libhegel chose rule \(index) of \(rules.count)")
+        }
+        let rule = rules[index]
+        step += 1
+        tc.note("Step \(step): \(rule.name) {")
+        return (rule, try tc.block(indent: 2))
+    }
+
+    /// Closes a step that returned or threw `error`.
+    func finishStep(_ rule: StateMachine<Model>.Rule, _ block: TestCase, _ error: (any Error)?)
+        throws
+    {
+        switch error {
+            case nil:
                 tc.note("}")
                 if tc.hasRecordedFailure() {
                     tc.note("Rule \(rule.name) failed:")
                     throw StopAfterRecordedFailure()
                 }
-            }
-            try tc.stopSpan(discard: rejected)
-            try checkInvariants(model, tc, sampling: machine)
+            case TestCaseStop.rejected?:
+                try machine.ruleRejected(tc)
+                roundRejected = true
+                block.note("Rule stopped early due to violated assumption.")
+                tc.note("}")
+            case let error?:
+                tc.note("}")
+                try rethrowStepError(
+                    error,
+                    trailer: "Rule \(rule.name) failed:",
+                    root: tc,
+                    block: block
+                )
         }
+    }
 
-        if !invariants.isEmpty {
+    func endRound() throws {
+        try tc.stopSpan(discard: roundRejected)
+    }
+
+    func dueInvariants(sampling: Bool, final: Bool) throws -> [StateMachine<Model>.Invariant] {
+        if final, !invariants.isEmpty {
             tc.note("Checking invariants on the final state.")
         }
-        try checkInvariants(model, tc, sampling: nil)
-        return model
+        return try machine.dueInvariants(tc, count: invariants.count, sampling: sampling)
+            .map { invariants[$0] }
     }
 
-    /// Checks the invariants the engine picks for this join point, or all
-    /// of them without a machine to ask: the guaranteed checks of the
-    /// initial and final states.
-    private func checkInvariants(
-        _ model: Model,
-        _ tc: TestCase,
-        sampling machine: MachineHandle?
+    /// Closes an invariant check that returned or threw `error`.
+    func finishCheck(
+        _ invariant: StateMachine<Model>.Invariant,
+        _ block: TestCase,
+        _ error: (any Error)?
     ) throws {
-        for (index, invariant) in invariants.enumerated() {
-            if let machine, try !machine.shouldCheckInvariant(tc, index: index) {
-                continue
-            }
-            let checkCase = try tc.block(indent: 2)
-            do {
-                try invariant.check(model, checkCase)
-            } catch {
-                try fail("Invariant \(invariant.name) failed:", error, tc, checkCase)
-            }
-            if tc.hasRecordedFailure() {
-                tc.note("Invariant \(invariant.name) failed:")
-                throw StopAfterRecordedFailure()
-            }
+        let trailer = "Invariant \(invariant.name) failed:"
+        if let error {
+            try rethrowStepError(error, trailer: trailer, root: tc, block: block)
         }
-    }
-
-    /// Rethrows an error from a step or check, naming the step in the
-    /// report unless the error only ends the test case.
-    private func fail(
-        _ trailer: String,
-        _ error: any Error,
-        _ tc: TestCase,
-        _ block: TestCase
-    ) throws -> Never {
-        if let stop = block.stop {
-            tc.stop = stop
-        }
-        if !(error is TestCaseStop) {
+        if tc.hasRecordedFailure() {
             tc.note(trailer)
+            throw StopAfterRecordedFailure()
         }
-        throw error
-    }
-}
-
-/// Ends a state machine run at the step where the test framework recorded
-/// a failure. The recorded failure, not this error, is what gets reported.
-struct StopAfterRecordedFailure: Error {}
-
-/// `HEGEL_STATE_MACHINE_DONE`, which Swift can't import (`INT64_MIN`).
-private let machineDone = Int64.min
-
-/// A `hegel_state_machine_t`, driven sequentially: one worker, one group.
-private final class MachineHandle {
-    let raw: OpaquePointer
-
-    init<Model>(
-        _ tc: TestCase,
-        steps: Int,
-        rules: [StateMachine<Model>.Rule],
-        invariants: [StateMachine<Model>.Invariant]
-    ) throws {
-        var handle: OpaquePointer?
-        try tc.call { hegel_new_state_machine($0, tc.raw, 1, 1, Int64(steps), &handle) }
-        guard let handle else {
-            throw HegelError.engine("libhegel returned no state machine handle")
-        }
-        raw = handle
-        let group: [Int64] = [0]
-        for rule in rules {
-            try rule.name.withHegelString { (name) throws in
-                try group.withUnsafeBufferPointer { groups in
-                    try tc.call {
-                        hegel_state_machine_add_rule(
-                            $0,
-                            tc.raw,
-                            handle,
-                            name,
-                            rule.weight,
-                            groups.baseAddress,
-                            groups.count
-                        )
-                    }
-                }
-            }
-        }
-        for invariant in invariants {
-            try invariant.name.withHegelString { (name) throws in
-                try tc.call {
-                    hegel_state_machine_add_invariant($0, tc.raw, handle, name, invariant.everyStep)
-                }
-            }
-        }
-        var concurrency: Int64 = 0
-        try tc.call { hegel_state_machine_start($0, tc.raw, handle, &concurrency) }
-    }
-
-    deinit {
-        hegel_state_machine_free(nil, raw)
-    }
-
-    /// Starts the next round; false when the machine is done.
-    func nextRound(_ tc: TestCase) throws -> Bool {
-        var group: Int64 = 0
-        var concurrency: Int64 = 0
-        try tc.call { hegel_state_machine_next_group($0, tc.raw, raw, &group, &concurrency) }
-        return group != machineDone
-    }
-
-    /// The next rule of this round, or nil at the round's end.
-    func nextRule(_ tc: TestCase) throws -> Int? {
-        var index: Int64 = 0
-        try tc.call { hegel_state_machine_next_rule($0, tc.raw, raw, 0, &index) }
-        return index == machineDone ? nil : Int(index)
-    }
-
-    func ruleRejected(_ tc: TestCase) throws {
-        try tc.call { hegel_state_machine_rule_rejected($0, tc.raw, raw, 0) }
-    }
-
-    func shouldCheckInvariant(_ tc: TestCase, index: Int) throws -> Bool {
-        var check = false
-        try tc.call {
-            hegel_state_machine_should_check_invariant($0, tc.raw, raw, Int64(index), &check)
-        }
-        return check
     }
 }

@@ -44,6 +44,22 @@ public final class TestCase {
         hegel_test_case_free(nil, raw)
     }
 
+    /// A handle onto an independent choice stream of this test case, for
+    /// concurrent worker `worker`: its output lines are prefixed with the
+    /// worker and the time. It has its own engine context, so it can be
+    /// driven from another thread while this handle waits.
+    func clone(worker: Int) throws -> TestCase {
+        var handle: OpaquePointer?
+        try call { hegel_test_case_clone($0, raw, &handle) }
+        guard let handle else {
+            throw HegelError.engine("libhegel returned no test case clone")
+        }
+        let clone = TestCase(raw: handle, context: EngineContext(), printsOutput: printsOutput)
+        clone.hasRecordedFailure = hasRecordedFailure
+        try clone.call { hegel_test_case_set_worker($0, handle, Int64(worker)) }
+        return clone
+    }
+
     /// A handle onto this case's choices whose output is an indented block
     /// at the current position of this one's, with its own draw names: the
     /// body of a state machine step under its heading.

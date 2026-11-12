@@ -70,4 +70,73 @@ struct ReadmeTests {
             try bank.run(tc, from: Bank(accounts: try tc.pool()))
         }
     }
+
+    actor Cache {
+        nonisolated let capacity: Int
+        private var entries: [String: String] = [:]
+
+        init(capacity: Int) {
+            self.capacity = capacity
+        }
+
+        var count: Int { entries.count }
+
+        func put(_ key: String, _ value: String) {
+            if entries.count >= capacity, entries[key] == nil {
+                entries.removeValue(forKey: entries.keys.first!)
+            }
+            entries[key] = value
+        }
+
+        func get(_ key: String) -> String? {
+            entries[key]
+        }
+    }
+
+    @Test("a concurrent state machine")
+    func concurrentMachine() async throws {
+        let cache = ConcurrentStateMachine<Cache>(concurrency: 2...4)
+            .rule("put", groups: ["writes"]) { cache, tc in
+                let key = try tc.draw(.string(of: .ascii, count: 1...3), named: "key")
+                await cache.put(key, "value")
+            }
+            .rule("get", groups: ["writes", "reads"]) { cache, tc in
+                let key = try tc.draw(.string(of: .ascii, count: 1...3), named: "key")
+                _ = await cache.get(key)
+            }
+            .invariant("size within capacity") { cache, _ in
+                #expect(await cache.count <= cache.capacity)
+            }
+
+        try await Property.check(settings: isolated) { tc in
+            try await cache.run(tc, from: Cache(capacity: 8))
+        }
+    }
+
+    @Test("concurrent report layout")
+    func concurrentReport() async throws {
+        let machine = ConcurrentStateMachine<Cache>(concurrency: 2...2)
+            .rule("put") { cache, tc in
+                let key = try tc.draw(.string(of: .ascii, count: 1...3), named: "key")
+                await cache.put(key, "value")
+                if await cache.count > 1 {
+                    throw Failed()
+                }
+            }
+        let outcome = try await Property.run(settings: isolated) { tc in
+            try await machine.run(tc, from: Cache(capacity: 8))
+        }
+        let drawn = try #require(outcome.failure).counterexamples[0].drawn
+        #expect(
+            drawn.prefix(2) == [
+                "Concurrency level: 2",
+                "---------------- Round 1: group \"default\" ----------------",
+            ]
+        )
+        #expect(drawn.contains { $0.hasPrefix("[worker 0 ") && $0.hasSuffix("] Rule: put {") })
+        // Which worker fails first, and with which key, depends on the
+        // schedule; the layout doesn't.
+        #expect(drawn.contains { $0.hasPrefix("[worker ") && $0.contains("]   let key = ") })
+        #expect(drawn.contains { $0.hasPrefix("[worker ") && $0.hasSuffix("] Rule put failed:") })
+    }
 }

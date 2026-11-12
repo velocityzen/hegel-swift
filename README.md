@@ -272,6 +272,8 @@ Expectation failed: s.real.pop() == s.model.removeLast()
 - The run stops at the first failing step, whether it threw or an `#expect` failed.
 - `steps:` sets how many steps the engine aims for (50 by default). `weight:` makes a rule more
   or less likely.
+- Rules and invariants may be `async`. A machine with any async ones runs with
+  `try await machine.run(tc, from:)`; the sync `run` throws a usage error for it.
 
 A `Pool` holds values that later steps draw on, such as accounts opened or keys inserted. The
 engine picks which value a draw gets, and shrinks that choice:
@@ -305,6 +307,60 @@ Pools have three draws:
 - `pool.consumed` removes it.
 - `pool.consumed(where:)` removes only a value that matches. Use it instead of
   `consumed.filter`, which would also remove the values it rejects.
+
+### Concurrent state machines
+
+A `ConcurrentStateMachine` runs rules at the same time, on several workers, against one shared
+model, to find races. The model must be `Sendable`: an actor, or a class that does its own
+locking. Rules and invariants are async and get the model itself, not a copy:
+
+```swift
+let cache = ConcurrentStateMachine<Cache>(concurrency: 2...4)
+    .rule("put", groups: ["writes"]) { cache, tc in
+        let key = try tc.draw(.string(of: .ascii, count: 1...3), named: "key")
+        await cache.put(key, "value")
+    }
+    .rule("get", groups: ["writes", "reads"]) { cache, tc in
+        let key = try tc.draw(.string(of: .ascii, count: 1...3), named: "key")
+        _ = await cache.get(key)
+    }
+    .invariant("size within capacity") { cache, _ in
+        #expect(await cache.count <= cache.capacity)
+    }
+
+@Test(.hegel)
+func cacheIsThreadSafe() async throws {
+    try await property { tc in
+        try await cache.run(tc, from: Cache(capacity: 8))
+    }
+}
+```
+
+- The run is split into rounds. In each one, the engine picks a concurrency group, and every
+  active worker runs a sequence of that group's rules, at the same time as the others.
+- Rules in the same group may overlap; rules that share no group never do. A rule in several
+  groups runs in the rounds of each. By default every rule is in one group.
+- `concurrency:` bounds the number of workers. The engine picks a level in that range,
+  favouring the top, and may change it between rounds.
+- Invariants run between rounds, while no rule is running.
+- Each worker draws from its own test case. In the report, every line a worker printed starts
+  with the worker and the time, under the round it ran in:
+
+  ```
+  Concurrency level: 2
+  ---------------- Round 1: group "writes" ----------------
+  [worker 0 +0.012ms] Rule: put {
+  [worker 0 +0.013ms]   let key = "a"
+  [worker 0 +0.020ms] }
+  ```
+- Workers may share a `Pool`. Add to it with `pool.add(value, using: tc)`, passing the rule's
+  own test case.
+- When several workers fail in one round, the first worker's failure is reported and the others
+  are noted under it.
+
+A race doesn't happen on every run. The engine notices when a failure comes and goes, and
+handles it as the `nondeterminism` setting says: `.quiet` and `.warn` report it once it has been
+confirmed, and `.error` fails the run.
 
 ## Settings
 
@@ -432,11 +488,9 @@ release's checksums.
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
 - **Not yet wrapped:**
-  - concurrent state machines (several workers running rules at once)
-  - async rules and invariants
   - repeated sections in reports (`hegel_new_repeat`)
   - choosing the Unicode version for patterns (`hegel_set_unicode_version`)
-  - drawing from several threads (`hegel_test_case_clone`)
+  - drawing from several threads outside a concurrent state machine
   - explicit examples
   - the engine's output callback (engine messages go to stderr)
   - Windows
