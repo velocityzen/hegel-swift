@@ -58,10 +58,15 @@ extension String {
         _ body: (hegel_string_t) throws(E) -> R
     ) throws(E) -> R {
         var copy = self
-        return try copy.withUTF8 { (buffer) throws(E) -> R in
+        // Swift 6.3's `withUTF8` is `rethrows`, not typed-throws, so the
+        // error goes through a `Result` to keep its type.
+        let result = copy.withUTF8 { (buffer) -> Result<R, E> in
             let data = UnsafeRawPointer(buffer.baseAddress)?.assumingMemoryBound(to: CChar.self)
-            return try body(hegel_string_t(data: data, len: buffer.count))
+            return Result { () throws(E) -> R in
+                try body(hegel_string_t(data: data, len: buffer.count))
+            }
         }
+        return try result.get()
     }
 }
 
