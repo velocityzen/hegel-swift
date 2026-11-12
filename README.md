@@ -142,7 +142,8 @@ A draw that doesn't initialize a plain binding (inside a closure, in a tuple pat
 larger initializer takes that binding's name: `let xs = [try #draw(.int(), from: tc)]` is reported
 as `let xs = 0`. Use `tc.draw(_:named:)` there.
 
-`#draw` comes with `HegelTesting` and builds with swift-syntax.
+`#draw` comes with `HegelTesting` and builds with swift-syntax. It needs Swift 6.4 to name draws:
+Swift 6.3 doesn't show a macro the binding it initializes, so there every `#draw` is unnamed.
 
 ### Explicit examples
 

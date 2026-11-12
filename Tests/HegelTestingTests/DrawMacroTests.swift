@@ -10,6 +10,19 @@ private func drawnLines(_ body: @escaping (TestCase) throws -> Void) throws -> [
 
 private let three = Gen.int(in: 3...3)
 
+// Swift 6.3 doesn't show a macro the `let` it initializes, so there every
+// `#draw` is unnamed.
+#if compiler(>=6.4)
+    private let namesBindings = true
+#else
+    private let namesBindings = false
+#endif
+
+/// `named` where `#draw` can name draws, `unnamed` where it can't.
+private func lines(_ named: [String], else unnamed: [String]) -> [String] {
+    namesBindings ? named : unnamed
+}
+
 @Suite("#draw")
 struct DrawMacroTests {
     @Test("is named after the binding it initializes")
@@ -22,7 +35,13 @@ struct DrawMacroTests {
             _ = typed
             throw Failed()
         }
-        #expect(drawn == ["let n = 3", "let count = 3", "let typed = 3"])
+        #expect(
+            drawn
+                == lines(
+                    ["let n = 3", "let count = 3", "let typed = 3"],
+                    else: ["let draw_1 = 3", "let draw_2 = 3", "let draw_3 = 3"]
+                )
+        )
     }
 
     @Test("names each binding of a multi-binding declaration")
@@ -32,7 +51,9 @@ struct DrawMacroTests {
             _ = (a, b)
             throw Failed()
         }
-        #expect(drawn == ["let a = 3", "let b = 3"])
+        #expect(
+            drawn == lines(["let a = 3", "let b = 3"], else: ["let draw_1 = 3", "let draw_2 = 3"])
+        )
     }
 
     @Test("is unnamed outside a plain binding")
@@ -54,7 +75,7 @@ struct DrawMacroTests {
             _ = xs
             throw Failed()
         }
-        #expect(drawn == ["let xs = 3"])
+        #expect(drawn == lines(["let xs = 3"], else: ["let draw_1 = 3"]))
     }
 
     @Test("an explicit tc.draw name is unaffected")
@@ -65,7 +86,13 @@ struct DrawMacroTests {
             _ = (n, m)
             throw Failed()
         }
-        #expect(drawn == ["let n = 3", "let chosen = 3"])
+        #expect(
+            drawn
+                == lines(
+                    ["let n = 3", "let chosen = 3"],
+                    else: ["let draw_1 = 3", "let chosen = 3"]
+                )
+        )
     }
 
     @Test(".hegel", .hegel(database: .disabled))
@@ -78,6 +105,7 @@ struct DrawMacroTests {
                 }
             }
         }
-        #expect(failure?.description.contains("let xs = [0, 0]") == true)
+        let line = namesBindings ? "let xs = [0, 0]" : "let draw_1 = [0, 0]"
+        #expect(failure?.description.contains(line) == true)
     }
 }
