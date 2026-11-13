@@ -23,6 +23,18 @@ private final class CallerTask: @unchecked Sendable {
     }
 }
 
+/// A count that tasks can share: a local `Atomic` can't be captured by a
+/// task group's child tasks.
+private final class Counter: Sendable {
+    private let count = Atomic(0)
+
+    var value: Int { count.load(ordering: .relaxed) }
+
+    func increment() {
+        count.add(1, ordering: .relaxed)
+    }
+}
+
 /// Waits forever, ignoring cancellation, as a lost wakeup does, and
 /// counts the waits.
 private final class Stuck: Sendable {
@@ -69,7 +81,7 @@ struct CancellationTests {
     func cancelBeforeStartUnderLoad() async throws {
         // Many runs at once, so a body's task can start the moment it is
         // let go, on another thread, racing the cancel.
-        let missed = Atomic(0)
+        let missed = Counter()
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<8 {
                 group.addTask {
@@ -80,13 +92,13 @@ struct CancellationTests {
                             Task.isCancelled
                         }
                         if run.cancelledAt == 0, !run.value {
-                            missed.add(1, ordering: .relaxed)
+                            missed.increment()
                         }
                     }
                 }
             }
         }
-        #expect(missed.load(ordering: .relaxed) == 0)
+        #expect(missed.value == 0)
     }
 
     @Test("a checkpoint in another task cancels the body's task")
