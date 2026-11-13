@@ -3,7 +3,7 @@
 # SwiftPM:
 #
 #   Artifacts/CHegel.xcframework            macOS (Apple platforms)
-#   Artifacts/CHegel.artifactbundle         Linux (static library bundle)
+#   Artifacts/CHegel.artifactbundle         Linux and Windows (static library bundle)
 #   Artifacts/CHegel.xcframework.zip        what a release uploads
 #   Artifacts/CHegel.artifactbundle.zip
 #   Artifacts/checksums.env                 SwiftPM checksums of the zips
@@ -32,6 +32,8 @@ files=(
     libhegel-darwin-arm64.a
     libhegel-linux-amd64.a
     libhegel-linux-arm64.a
+    libhegel-windows-amd64.lib
+    libhegel-windows-arm64.lib
 )
 
 echo "Downloading $tag"
@@ -99,6 +101,13 @@ for arch in amd64 arm64; do
     make_headers "$slice/include" pthread dl m
     cp "$work/download/libhegel-linux-$arch.a" "$slice/libhegel.a"
 done
+# The Windows libraries carry most of their system imports inline; these are
+# the DLLs whose symbols they still leave to the linker.
+for arch in amd64 arm64; do
+    slice="$bundle/windows-$arch"
+    make_headers "$slice/include" kernel32 advapi32 ntdll userenv ws2_32 bcrypt
+    cp "$work/download/libhegel-windows-$arch.lib" "$slice/hegel.lib"
+done
 cat > "$bundle/info.json" << JSON
 {
   "schemaVersion": "1.0",
@@ -121,6 +130,22 @@ cat > "$bundle/info.json" << JSON
           "staticLibraryMetadata": {
             "headerPaths": ["linux-arm64/include"],
             "moduleMapPath": "linux-arm64/include/module.modulemap"
+          }
+        },
+        {
+          "path": "windows-amd64/hegel.lib",
+          "supportedTriples": ["x86_64-unknown-windows-msvc"],
+          "staticLibraryMetadata": {
+            "headerPaths": ["windows-amd64/include"],
+            "moduleMapPath": "windows-amd64/include/module.modulemap"
+          }
+        },
+        {
+          "path": "windows-arm64/hegel.lib",
+          "supportedTriples": ["aarch64-unknown-windows-msvc"],
+          "staticLibraryMetadata": {
+            "headerPaths": ["windows-arm64/include"],
+            "moduleMapPath": "windows-arm64/include/module.modulemap"
           }
         }
       ]

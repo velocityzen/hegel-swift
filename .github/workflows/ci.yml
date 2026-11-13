@@ -86,6 +86,34 @@ jobs:
       - name: Run tests
         run: swift test
 
+  test-windows:
+    name: Windows tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Swift ${{ env.SWIFT_VERSION }}
+        uses: compnerd/gha-setup-swift@v0.5.1
+        with:
+          swift-version: swift-${{ env.SWIFT_VERSION }}-release
+          swift-build: ${{ env.SWIFT_VERSION }}-RELEASE
+
+      - name: Install packaging tools
+        run: choco install zip --no-progress -y
+
+      - name: Package libhegel
+        run: Scripts/package-libhegel.sh
+
+      - name: Run tests
+        run: swift test
+
   # What a package that depends on hegel-swift gets: the binary targets from
   # the release URLs in Package.swift, checked against their checksums.
   release-artifacts:
