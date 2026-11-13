@@ -205,6 +205,11 @@ cancel at all when the bug doesn't need one.
   hand-written wait-with-timeout: once the drawn cancel lands, the body has that long to end, or
   the case fails with `StillRunning` (origin: the call site), which shrinks. Shrink candidates get
   a shorter limit, as with stalls, so a generous one is cheap.
+- **Check that the rest of the run doesn't hang** with `stallsAfter:` alongside `endsWithin:`.
+  `endsWithin` only covers the time after the cancel; a hang before it, or in a run that isn't
+  cancelled (a quarter of them), would hang the test. With `stallsAfter`, every `checkpoint()` and
+  `cancellation.beat()` is progress, and a body that goes that long without either fails with
+  `Stalled`. Don't hand-roll a watchdog: `withStallDetection` can't nest inside the body.
 - **Check that nothing was left running** with a `CancellationProbe`: hand `probe.hang()` to the
   code under test as the work it starts (a request that never answers, a job that never finishes),
   and check `probe.uncancelled == 0` after the run. It counts each cancel in the hang's

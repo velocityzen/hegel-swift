@@ -353,4 +353,124 @@ struct CancellationTests {
         #expect(!shortened.isEmpty)
         #expect(shortened.allSatisfy { $0 >= .milliseconds(100) })
     }
+
+    @Test("stallsAfter: a hang in a run that isn't cancelled fails, shrunk to no cancel")
+    func stallsUncancelled() async throws {
+        let stuck = Stuck()
+        let outcome = try await Property.run(settings: isolated) { tc in
+            _ = try await tc.withRandomCancellation(
+                checkpoints: 0...3,
+                endsWithin: .seconds(5),
+                stallsAfter: .milliseconds(300)
+            ) { cancellation in
+                cancellation.checkpoint("step 1")
+                cancellation.checkpoint("step 2")
+                // A bug: work the cancel doesn't reach first never ends.
+                if !Task.isCancelled {
+                    await stuck.wait()
+                }
+            }
+        }
+        let counterexample = try #require(outcome.failure?.counterexamples.first)
+        #expect(
+            counterexample.drawn == ["let cancelAfter = nil", "// Not cancelled: 2 checkpoints"]
+        )
+        let stalled = try #require(counterexample.error as? Stalled)
+        #expect(stalled.limit == .milliseconds(300))
+        #expect(stalled.beats == 2)
+        #expect(stalled.location.hasPrefix("HegelTests/CancellationTests.swift:"))
+        #expect(counterexample.origin.hasPrefix("Stalled at "))
+        #expect(stuck.started > 0)
+    }
+
+    @Test("stallsAfter: a hang before the drawn cancel fails")
+    func stallsBeforeTheCancel() async throws {
+        let stuck = Stuck()
+        let outcome = try await Property.run(settings: isolated) { tc in
+            _ = try await tc.withRandomCancellation(
+                checkpoints: 1...1,
+                stallsAfter: .milliseconds(300)
+            ) { cancellation in
+                // A bug: the work hangs before it reaches its cancel point.
+                await stuck.wait()
+                cancellation.checkpoint()
+            }
+        }
+        let counterexample = try #require(outcome.failure?.counterexamples.first)
+        let stalled = try #require(counterexample.error as? Stalled)
+        #expect(stalled.beats == 0)
+    }
+
+    @Test("stallsAfter: slow work that keeps beating passes")
+    func slowButBeating() async throws {
+        let outcome = try await Property.run(settings: isolated.merging(Settings(testCases: 3))) {
+            tc in
+            _ = try await tc.withRandomCancellation(
+                checkpoints: 0...0,
+                stallsAfter: .seconds(1)
+            ) { cancellation in
+                // Uncancelled runs take 1.5 s in all, beating every 50 ms.
+                for _ in 1...30 {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    cancellation.beat()
+                }
+            }
+        }
+        #expect(outcome.failure == nil)
+    }
+
+    @Test("stallsAfter: once the cancel lands, endsWithin takes over")
+    func endsWithinTakesOver() async throws {
+        let cancelled = Atomic(0)
+        let outcome = try await Property.run(settings: isolated.merging(Settings(testCases: 8))) {
+            tc in
+            let run = try await tc.withRandomCancellation(
+                checkpoints: 1...1,
+                endsWithin: .seconds(5),
+                stallsAfter: .milliseconds(100)
+            ) { cancellation in
+                cancellation.checkpoint()
+                if Task.isCancelled {
+                    // Cleanup that takes longer than the stall limit, with
+                    // no beats: within `endsWithin`, so not a stall.
+                    await Task.detached { try? await Task.sleep(for: .milliseconds(300)) }.value
+                }
+            }
+            if run.cancelledAt != nil {
+                cancelled.add(1, ordering: .relaxed)
+            }
+        }
+        #expect(outcome.failure == nil)
+        #expect(cancelled.load(ordering: .relaxed) > 0)
+    }
+
+    @Test("stallsAfter: shrink candidates get a shorter limit; the report has the full one")
+    func stallsShrinkFaster() async throws {
+        let full: Duration = .seconds(1)
+        let stuck = Stuck()
+        let limits = Mutex<[Duration]>([])
+        let outcome = try await Property.run(settings: isolated) { tc in
+            let n = try tc.draw(.int(in: 0...1000), named: "n")
+            do {
+                _ = try await tc.withRandomCancellation(
+                    checkpoints: 1...1,
+                    stallsAfter: full
+                ) { cancellation in
+                    if n >= 10 {
+                        await stuck.wait()
+                    }
+                    cancellation.checkpoint()
+                }
+            } catch let stalled as Stalled {
+                limits.withLock { $0.append(stalled.limit) }
+                throw stalled
+            }
+        }
+        let counterexample = try #require(outcome.failure?.counterexamples.first)
+        #expect(counterexample.drawn.first == "let n = 10")
+        #expect((counterexample.error as? Stalled)?.limit == full)
+        let shortened = limits.withLock { $0 }.filter { $0 < full }
+        #expect(!shortened.isEmpty)
+        #expect(shortened.allSatisfy { $0 >= .milliseconds(100) })
+    }
 }
