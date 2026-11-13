@@ -31,6 +31,8 @@ struct HegelRepeatTests {
             }
         }
         try #require(issues.count == 1)
-        #expect(issues[0].commentText.contains("] let n_2 = 4"))
+        // The workers draw concurrently, so worker 1's value may be named
+        // `n` or `n_2` depending on which worker draws first.
+        #expect(issues[0].commentText.contains(/\[worker 1 [^\]]*\] let n(_2)? = 4/))
     }
 }

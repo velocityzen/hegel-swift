@@ -93,9 +93,14 @@ struct ConcurrentlyTests {
             }
         }
         let drawn = try #require(outcome.failure).counterexamples[0].drawn
-        #expect(drawn.count == 2)
-        #expect(drawn[0].hasPrefix("[worker 0 ") && drawn[0].hasSuffix("] let n = 0"))
-        #expect(drawn[1].hasPrefix("[worker 1 ") && drawn[1].hasSuffix("] let n_2 = 4"))
+        try #require(drawn.count == 2)
+        // The workers draw concurrently, so which of them gets `n` and which
+        // `n_2` depends on which draws first.
+        let lines = try drawn.map { line in
+            try #require(line.wholeMatch(of: /\[worker (\d) [^\]]*\] let (n|n_2) = (\d+)/)).output
+        }
+        #expect(lines.map { "\($0.1) \($0.3)" } == ["0 0", "1 4"])
+        #expect(Set(lines.map(\.2)) == ["n", "n_2"])
     }
 
     @Test("a worker that rejects rejects the test case")
