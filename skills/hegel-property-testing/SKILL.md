@@ -3,7 +3,7 @@ name: hegel-property-testing
 description: >-
   Best practices for designing, writing, reviewing and validating property-based tests with
   hegel-swift (Gen, property, TestCase, StateMachine, ConcurrentStateMachine, Pool, repeat,
-  concurrently, withRandomCancellation). Use when writing Hegel properties for a feature or type,
+  concurrently, withRandomCancellation, withStallDetection). Use when writing Hegel properties for a feature or type,
   choosing or reviewing generators, modeling a stateful, failing or concurrent API, reviewing an
   existing property suite for weak inputs or weak checks, investigating a shrunk counterexample,
   or checking that a property would actually catch a bug.
@@ -61,6 +61,7 @@ about proving both work instead of trusting a green run.
 | Operations whose inputs depend on earlier results (handles, keys, IDs) | `StateMachine` with a model, plus `Pool`                                               |
 | Thread safety, actor reentrancy, races                                 | `ConcurrentStateMachine`, or `tc.concurrently(workers:)`                               |
 | Cancellation handling and cleanup                                      | `tc.withRandomCancellation` with checkpoints                                           |
+| Async code that can hang: lost wakeups, deadlocks                      | `tc.withStallDetection(after:)` around the work, with `heartbeat.beat()` per step      |
 | Failing dependencies, lost acknowledgements, crash and restart         | a test double driven by a drawn fault schedule, inside a `StateMachine`                |
 
 Details and patterns: [references/stateful-and-faults.md](references/stateful-and-faults.md).

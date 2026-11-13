@@ -263,6 +263,34 @@ try await property { tc in
   whether code after the nth checkpoint saw the cancel. Cancelling the caller cancels the body
   too. The body can't draw: draw what it needs first.
 
+### Detecting stalls
+
+A lost wakeup or a deadlock makes async code wait forever, and Hegel can't report or shrink a test
+case that never returns. `tc.withStallDetection(after:)` turns the hang into a failure. Call
+`heartbeat.beat()` at each step of progress, so slow work that keeps beating isn't mistaken for
+stuck work:
+
+```swift
+try await property { tc in
+    let jobs = try tc.draw(.array(of: .int()), named: "jobs")
+    let results = try await tc.withStallDetection(after: .seconds(5)) { heartbeat in
+        try await pool.run(jobs, onEach: { _ in heartbeat.beat() })
+    }
+    #expect(results.count == jobs.count)
+}
+```
+
+- When the heartbeat goes the limit without a beat, the body's task is cancelled and the call
+  throws `Stalled`. Its origin is the call site, so stalls at different calls are different bugs.
+  The body's value is returned and its error rethrown.
+- The body runs in a task of its own, which is abandoned once it stalls: a hang that ignores
+  cancellation would otherwise hang the test too. The body can't draw: draw what it needs first.
+- Shrinking a stall would cost the full limit for every candidate that still hangs. So once a case
+  has stalled, the cases tried while shrinking get a shorter limit: 4 times the longest gap between
+  beats seen in passing cases, and at least 100 ms. The cases a report is built from still get the
+  full limit, so a reported stall is always a full one.
+- Allow for a busy CI machine: a few seconds for work whose steps take milliseconds.
+
 ## Generators
 
 A `Gen<Value>` is a value. There is no `Arbitrary` protocol: you build generators with functions,

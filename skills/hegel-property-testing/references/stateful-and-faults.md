@@ -200,3 +200,19 @@ fully applied or fully rolled back; the cancellation was observed by code after 
 (`run.isCancelled(after: n)`); no work continued after the task finished. The body can't draw:
 draw everything first. A failure shrinks to the earliest checkpoint that still fails, or to no
 cancel at all when the bug doesn't need one.
+
+## Stalls
+
+A hang is how async code usually fails, and a test case that never returns can't be reported or
+shrunk. Wrap async work under test in `tc.withStallDetection(after:)`, and call `heartbeat.beat()`
+at each step of progress: a read, a finished transform, a delivered value. Beat from the code
+under test's callbacks, not from a timer, or a stuck system still looks alive.
+
+- A stall throws `Stalled` and cancels the work's task. There's no need for
+  `#require(…, "stalled")` at the call site.
+- Pick the limit for a busy CI machine, a few seconds for millisecond steps. Shrinking doesn't pay
+  it per candidate: after the first stall, candidates get 4 times the longest beat gap of passing
+  cases, so a generous limit is cheap.
+- Beat at every step. If a passing case goes a long time without a beat, the shortened limit is
+  long too, and so is shrinking.
+- The body runs in its own task and can't draw. Draw inputs first.

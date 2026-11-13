@@ -237,6 +237,8 @@ final class RunDriver {
     private let blob: String?
     private let verbosity: Settings.Verbosity
     private var captures: [String: Capture] = [:]
+    /// What this run's cases have shown about their stalls.
+    private let stallLog = StallLog()
 
     /// What a failing test case leaves for its report.
     private struct Capture {
@@ -314,7 +316,12 @@ final class RunDriver {
                 case .normal: stamped
                 case .verbose, .debug: true
             }
-        return TestCase(raw: handle, context: context, printsOutput: printsOutput)
+        return TestCase(
+            raw: handle,
+            context: context,
+            printsOutput: printsOutput,
+            stalls: CaseStalls(log: stallLog, reported: stamped)
+        )
     }
 
     func finish(_ tc: TestCase, _ outcome: Result<Void, any Error>) throws(HegelError) {
@@ -344,6 +351,9 @@ final class RunDriver {
 
         if let failure {
             store(origin: failure.origin, Capture(drawn: tc.readOutput(), error: failure.error))
+        }
+        if status == HEGEL_STATUS_VALID, usageError == nil {
+            tc.stalls?.commitPassing()
         }
 
         // C enums import as UInt32 with Clang's defaults and as Int32 on

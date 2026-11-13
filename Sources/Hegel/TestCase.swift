@@ -26,6 +26,9 @@ public final class TestCase {
     /// Whether this case prints its draws: only the cases a failure report
     /// can be built from do.
     let printsOutput: Bool
+    /// The run's stall log as this case sees it, for
+    /// `withStallDetection`; nil for an explicit example.
+    let stalls: CaseStalls?
 
     private var rootPrinter: Printer?
     /// The names this handle's draws are shown under. Shared with clones
@@ -44,11 +47,13 @@ public final class TestCase {
         raw: OpaquePointer,
         context: EngineContext,
         printsOutput: Bool,
+        stalls: CaseStalls? = nil,
         names: DrawNames = DrawNames()
     ) {
         self.raw = raw
         self.context = context
         self.printsOutput = printsOutput
+        self.stalls = stalls
         self.names = names
         explicit = nil
         explicitIndent = ""
@@ -60,6 +65,7 @@ public final class TestCase {
         raw = nil
         context = EngineContext()
         printsOutput = false
+        stalls = nil
         explicit = example
         explicitIndent = indent
         self.names = names
@@ -91,6 +97,7 @@ public final class TestCase {
             raw: handle,
             context: EngineContext(),
             printsOutput: printsOutput,
+            stalls: stalls,
             names: names
         )
         clone.hasRecordedFailure = hasRecordedFailure
@@ -121,6 +128,7 @@ public final class TestCase {
             raw: handle,
             context: context,
             printsOutput: printsOutput,
+            stalls: stalls,
             names: sharingNames ? names : DrawNames()
         )
         block.hasRecordedFailure = hasRecordedFailure
