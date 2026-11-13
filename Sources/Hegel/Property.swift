@@ -28,6 +28,11 @@ public enum Property {
     ///     they give. A failing one ends the run, unless the
     ///     `reportMultipleFailures` setting is on. They run only when the
     ///     `explicit` phase is enabled.
+    ///   - reaching: Reach claims: event labels that some passing generated
+    ///     case must record with `tc.event`, or the run throws
+    ///     `HegelError.unreached`. They show that the property tested the
+    ///     states it exists for. A run that fails, replays a blob or doesn't
+    ///     generate doesn't judge them.
     ///   - output: Receives the engine's output, one line at a time, instead
     ///     of standard error: statistics, verbose logs and health check
     ///     messages. It is called on the thread that runs the property.
@@ -39,6 +44,7 @@ public enum Property {
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
         examples: [Example] = [],
+        reaching: [String] = [],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws(HegelError) -> PropertyOutcome {
@@ -64,7 +70,9 @@ public enum Property {
             let outcome = Result { try body(tc) }
             try driver.finish(tc, outcome)
         }
-        return try driver.outcome().adding(explicitFailures)
+        let outcome = try driver.outcome().adding(explicitFailures)
+        try driver.checkReaching(reaching, outcome)
+        return outcome
     }
 
     /// Runs the asynchronous `body` against generated test cases and returns
@@ -76,6 +84,7 @@ public enum Property {
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
         examples: [Example] = [],
+        reaching: [String] = [],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws(HegelError) -> PropertyOutcome {
@@ -101,7 +110,9 @@ public enum Property {
             let outcome = await result { try await body(tc) }
             try driver.finish(tc, outcome)
         }
-        return try driver.outcome().adding(explicitFailures)
+        let outcome = try driver.outcome().adding(explicitFailures)
+        try driver.checkReaching(reaching, outcome)
+        return outcome
     }
 
     /// Runs `body` against generated test cases, throwing a
@@ -112,6 +123,7 @@ public enum Property {
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
         examples: [Example] = [],
+        reaching: [String] = [],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws {
@@ -121,6 +133,7 @@ public enum Property {
             location: location,
             reproducing: blob,
             examples: examples,
+            reaching: reaching,
             output: output,
             body
         )
@@ -137,6 +150,7 @@ public enum Property {
         location: TestLocation? = nil,
         reproducing blob: String? = nil,
         examples: [Example] = [],
+        reaching: [String] = [],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws {
@@ -146,6 +160,7 @@ public enum Property {
             location: location,
             reproducing: blob,
             examples: examples,
+            reaching: reaching,
             output: output,
             body
         )
@@ -239,6 +254,10 @@ final class RunDriver {
     private var captures: [String: Capture] = [:]
     /// What this run's cases have shown about their stalls.
     private let stallLog = StallLog()
+    /// How many passing generated cases recorded each event label.
+    private var reached: [String: Int] = [:]
+    /// How many generated cases passed.
+    private var passingCases = 0
 
     /// What a failing test case leaves for its report.
     private struct Capture {
@@ -320,7 +339,7 @@ final class RunDriver {
             raw: handle,
             context: context,
             printsOutput: printsOutput,
-            stalls: CaseStalls(log: stallLog, reported: stamped)
+            run: CaseRun(stalls: CaseStalls(log: stallLog, reported: stamped))
         )
     }
 
@@ -352,8 +371,12 @@ final class RunDriver {
         if let failure {
             store(origin: failure.origin, Capture(drawn: tc.readOutput(), error: failure.error))
         }
-        if status == HEGEL_STATUS_VALID, usageError == nil {
-            tc.stalls?.commitPassing()
+        if status == HEGEL_STATUS_VALID, usageError == nil, let run = tc.run {
+            run.stalls.commitPassing()
+            passingCases += 1
+            for label in run.events {
+                reached[label, default: 0] += 1
+            }
         }
 
         // C enums import as UInt32 with Clang's defaults and as Int32 on
@@ -383,6 +406,23 @@ final class RunDriver {
             return
         }
         captures[origin] = capture
+    }
+
+    /// Checks a passing run's reach claims: each label in `labels` was
+    /// recorded with `event` by at least one passing generated case.
+    ///
+    /// A run that can't judge them doesn't: one that failed, replays a
+    /// reproduce blob, or doesn't generate.
+    func checkReaching(_ labels: [String], _ outcome: PropertyOutcome) throws(HegelError) {
+        guard !labels.isEmpty, outcome.failure == nil, blob == nil,
+            settings.phases.contains(.generate)
+        else {
+            return
+        }
+        let unreached = labels.filter { reached[$0, default: 0] == 0 }
+        if !unreached.isEmpty {
+            throw .unreached(unreached, testCases: passingCases)
+        }
     }
 
     func outcome() throws(HegelError) -> PropertyOutcome {

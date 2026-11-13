@@ -26,9 +26,9 @@ public final class TestCase {
     /// Whether this case prints its draws: only the cases a failure report
     /// can be built from do.
     let printsOutput: Bool
-    /// The run's stall log as this case sees it, for
-    /// `withStallDetection`; nil for an explicit example.
-    let stalls: CaseStalls?
+    /// What this case shares with its run: its stall log and the events it
+    /// records. Shared by the case's handles; nil for an explicit example.
+    let run: CaseRun?
 
     private var rootPrinter: Printer?
     /// The names this handle's draws are shown under. Shared with clones
@@ -47,13 +47,13 @@ public final class TestCase {
         raw: OpaquePointer,
         context: EngineContext,
         printsOutput: Bool,
-        stalls: CaseStalls? = nil,
+        run: CaseRun? = nil,
         names: DrawNames = DrawNames()
     ) {
         self.raw = raw
         self.context = context
         self.printsOutput = printsOutput
-        self.stalls = stalls
+        self.run = run
         self.names = names
         explicit = nil
         explicitIndent = ""
@@ -65,7 +65,7 @@ public final class TestCase {
         raw = nil
         context = EngineContext()
         printsOutput = false
-        stalls = nil
+        run = nil
         explicit = example
         explicitIndent = indent
         self.names = names
@@ -97,7 +97,7 @@ public final class TestCase {
             raw: handle,
             context: EngineContext(),
             printsOutput: printsOutput,
-            stalls: stalls,
+            run: run,
             names: names
         )
         clone.hasRecordedFailure = hasRecordedFailure
@@ -128,7 +128,7 @@ public final class TestCase {
             raw: handle,
             context: context,
             printsOutput: printsOutput,
-            stalls: stalls,
+            run: run,
             names: sharingNames ? names : DrawNames()
         )
         block.hasRecordedFailure = hasRecordedFailure
@@ -262,6 +262,7 @@ public final class TestCase {
         try label.withHegelString { (view) throws in
             try call { hegel_event($0, raw, view) }
         }
+        run?.recordEvent(label)
     }
 
     /// Records a numeric observation under `label`, for the statistics
@@ -273,6 +274,7 @@ public final class TestCase {
         try label.withHegelString { (view) throws in
             try call { hegel_event_value($0, raw, value, view) }
         }
+        run?.recordEvent(label)
     }
 
     // MARK: - Engine primitives
