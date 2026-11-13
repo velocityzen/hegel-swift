@@ -8,8 +8,8 @@ import PackageDescription
 // with the checksums below, by Scripts/bump-libhegel.sh (run by the
 // libhegel-bump workflow); do not edit by hand.
 let libhegelVersion = "0.51.5"
-let xcframeworkChecksum = "d1dc99d26d70bd31ad97b3d3ad6db33231575bce6bc819f86e137a860a53d936"
-let artifactbundleChecksum = "be2e691445b1a828cbdcc28b1d22c9f4e5ac9b83d84e05747321a6dc96b43900"
+let xcframeworkChecksum = "dea8a81c0ef961458e58051552dc683b3c6cf630888823d5f5c989e03f8c1f2b"
+let artifactbundleChecksum = "d829cc2d7865e9667eec1d33bea4bbcca376fe93c3b1e559a4ae716c1ae595c2"
 
 // libhegel ships as two binary targets: an XCFramework for Apple platforms
 // and a static-library artifact bundle for Linux and Windows. Releases of this package
