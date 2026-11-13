@@ -313,7 +313,9 @@ final class EngineSettings {
     var verbosity: Settings.Verbosity {
         var value = HEGEL_VERBOSITY_NORMAL
         hegel_settings_get_verbosity(nil, raw, &value)
-        return Settings.Verbosity(rawValue: value.rawValue) ?? .normal
+        // C enums import as UInt32 with Clang's defaults and as Int32 on
+        // Windows, where MSVC makes them `int`.
+        return Settings.Verbosity(rawValue: UInt32(truncatingIfNeeded: value.rawValue)) ?? .normal
     }
 
     var printBlob: Bool {
