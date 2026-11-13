@@ -21,8 +21,25 @@ import Synchronization
 ///
 /// `examples` are explicit examples, run first with the values they give,
 /// keyed by draw name. See `Example`.
+///
+/// `reaching` lists reach claims: event labels that some passing generated
+/// case must record with `tc.event`. They show the property tested the
+/// states it exists for, and not only easy inputs:
+///
+/// ```swift
+/// try await property(reaching: ["transforms overlapped"]) { tc in
+///     let jobs = try tc.draw(jobsGen, named: "jobs")
+///     let report = try await pool.run(jobs)
+///     if report.maxOverlap > 1 { try tc.event("transforms overlapped") }
+///     #expect(report.results == jobs.map(transform))
+/// }
+/// ```
+///
+/// An unreached claim is a test issue. A run that fails, replays a blob,
+/// or doesn't generate doesn't judge the claims.
 public func property(
     examples: [Example] = [],
+    reaching: [String] = [],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) throws -> Void
 ) throws {
@@ -42,14 +59,21 @@ public func property(
         }
         return
     }
-    let outcome = try Property.run(
-        settings: scope.settings,
-        databaseKey: scope.databaseKey,
-        location: scope.location,
-        examples: examples,
-        output: scope.output,
-        { tc in try runner.runCase(tc, nil, body) }
-    )
+    let outcome: PropertyOutcome
+    do {
+        outcome = try Property.run(
+            settings: scope.settings,
+            databaseKey: scope.databaseKey,
+            location: scope.location,
+            examples: examples,
+            reaching: reaching,
+            output: scope.output,
+            { tc in try runner.runCase(tc, nil, body) }
+        )
+    } catch let unreached where unreached.isUnreached {
+        runner.recordUnreached(unreached)
+        return
+    }
     try runner.report(outcome) { replay, recorder in
         try Property.run(
             settings: replay.settings(scope.settings),
@@ -65,6 +89,7 @@ public func property(
 /// `property(examples:sourceLocation:_:)`.
 public func property(
     examples: [Example] = [],
+    reaching: [String] = [],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) async throws -> Void
 ) async throws {
@@ -85,14 +110,21 @@ public func property(
         }
         return
     }
-    let outcome = try await Property.run(
-        settings: scope.settings,
-        databaseKey: scope.databaseKey,
-        location: scope.location,
-        examples: examples,
-        output: scope.output,
-        { tc in try await runner.runCase(tc, nil, body) }
-    )
+    let outcome: PropertyOutcome
+    do {
+        outcome = try await Property.run(
+            settings: scope.settings,
+            databaseKey: scope.databaseKey,
+            location: scope.location,
+            examples: examples,
+            reaching: reaching,
+            output: scope.output,
+            { tc in try await runner.runCase(tc, nil, body) }
+        )
+    } catch let unreached where unreached.isUnreached {
+        runner.recordUnreached(unreached)
+        return
+    }
     try await runner.report(outcome) { replay, recorder in
         try await Property.run(
             settings: replay.settings(scope.settings),
@@ -253,6 +285,11 @@ struct PropertyRunner {
     }
 
     /// Replays a blob the `.hegel(reproducing:)` trait gave.
+    /// Records a run's unmet reach claims as an issue at the property.
+    func recordUnreached(_ error: HegelError) {
+        Issue.record(Comment(rawValue: error.description), sourceLocation: sourceLocation)
+    }
+
     func finish(replaying blob: String, _ run: (CaseRecorder) throws -> PropertyOutcome) throws {
         let recorder = CaseRecorder(
             annotation: Comment(rawValue: "Replayed from a reproduce blob.")
@@ -405,5 +442,14 @@ enum IssueInterceptor {
             return issue
         }
         return recorder.intercept(issue)
+    }
+}
+
+extension HegelError {
+    var isUnreached: Bool {
+        if case .unreached = self {
+            return true
+        }
+        return false
     }
 }

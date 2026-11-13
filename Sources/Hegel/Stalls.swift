@@ -131,7 +131,7 @@ extension TestCase {
         _ body: @escaping @Sendable (_ heartbeat: Heartbeat) async throws -> Value
     ) async throws -> Value {
         precondition(limit > .zero, "a stall limit must be positive")
-        let effectiveLimit = stalls?.limit(for: limit) ?? limit
+        let effectiveLimit = run?.stalls.limit(for: limit) ?? limit
         let heartbeat = Heartbeat()
         let (outcomes, delivery) = AsyncStream.makeStream(of: StallOutcome<Value>.self)
         let work = Task.detached {
@@ -164,11 +164,11 @@ extension TestCase {
         watchdog.cancel()
         switch outcome {
             case .finished(let result, let longestGap)?:
-                stalls?.record(longestGap)
+                run?.stalls.record(longestGap)
                 return try result.get()
             case .stalled?:
                 work.cancel()
-                stalls?.noteStall()
+                run?.stalls.noteStall()
                 throw Stalled(
                     limit: effectiveLimit,
                     beats: heartbeat.count,

@@ -173,6 +173,28 @@ try property(examples: [["xs": [Int]()], ["xs": [3, 1, 2]]]) { tc in
 - Examples run only when the `explicit` phase is on, which it is by default. A run that replays
   a reproduce blob skips them.
 
+### Reach claims
+
+A property can pass because its generators never reach the state it exists to test. List the
+event labels it must record, and the test fails when no passing generated case recorded one:
+
+```swift
+try await property(reaching: ["transforms overlapped"]) { tc in
+    let jobs = try tc.draw(jobsGen, named: "jobs")
+    let report = try await pool.run(jobs)
+    if report.maxOverlap > 1 { try tc.event("transforms overlapped") }
+    #expect(report.results == jobs.map(transform))
+}
+```
+
+- Events from `concurrently` workers and from state machine rules and invariants count. Events
+  from rejected cases and from explicit examples don't.
+- A run that can't judge the claims doesn't: one that fails, replays a reproduce blob or a stored
+  failure, or runs only explicit examples.
+- Claim states that statistics (`HEGEL_STATISTICS=1`) show in a healthy share of cases; a claim on
+  a rare state is flaky.
+- `Property.run(reaching:)` throws `HegelError.unreached` instead.
+
 ### Repeating a body
 
 `tc.repeat` runs a body again and again, for as long as the engine wants. A failure shrinks to

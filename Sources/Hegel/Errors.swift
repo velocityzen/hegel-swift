@@ -17,6 +17,9 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
     case versionMismatch(expected: String, actual: String)
     /// A reproduce blob replayed without failing.
     case notReproduced(blob: String)
+    /// The property passed, but no passing test case recorded these reach
+    /// claims' event labels, out of `testCases` that passed.
+    case unreached([String], testCases: Int)
 
     public var description: String {
         switch self {
@@ -39,6 +42,13 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
                 The reproduce blob did not reproduce a failure. The failure may \
                 have been fixed, or, for a nondeterministic failure, it may not \
                 have recurred within the replay budget.
+                """
+            case .unreached(let labels, let testCases):
+                """
+                Unreached: no passing test case recorded \(labels.map { "\"\($0)\"" }.joined(separator: ", ")) \
+                in \(testCases) test case\(testCases == 1 ? "" : "s"). The property passed without \
+                testing what it claims to: widen its generators, or check the condition that records \
+                the event.
                 """
         }
     }

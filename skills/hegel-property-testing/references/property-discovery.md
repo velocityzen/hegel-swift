@@ -104,8 +104,8 @@ Classify each property:
   every evaluation.
 - **Liveness** — a good thing eventually happens. In a bounded test: after the failures stop and
   the system gets a bounded amount of progress, it has converged.
-- **Reachability** — a state or path is reached. Checked with events and reach counters, not with
-  `#expect` inside the property.
+- **Reachability** — a state or path is reached. Checked with events listed in
+  `property(reaching:)`, not with `#expect` inside the property.
 
 See [oracles.md](oracles.md) for how each becomes code.
 

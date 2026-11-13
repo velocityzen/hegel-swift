@@ -56,10 +56,12 @@ struct StallTests {
     func slowButProgressing() async throws {
         let outcome = try await Property.run(settings: isolated.merging(Settings(testCases: 3))) {
             tc in
-            // Twice the limit in all, in steps of a twentieth of it.
-            try await tc.withStallDetection(after: .milliseconds(400)) { heartbeat in
-                for _ in 0..<40 {
-                    try await Task.sleep(for: .milliseconds(20))
+            // Longer than the limit in all, in steps of a twentieth of it:
+            // a small CI runner can hold a sleeping task back for hundreds
+            // of milliseconds.
+            try await tc.withStallDetection(after: .seconds(1)) { heartbeat in
+                for _ in 0..<30 {
+                    try await Task.sleep(for: .milliseconds(50))
                     heartbeat.beat()
                 }
             }
