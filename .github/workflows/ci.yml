@@ -92,18 +92,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, windows-11-arm]
+        include:
+          - runner: windows-latest
+            arch: amd64
+          - runner: windows-11-arm
+            arch: arm64
     defaults:
       run:
         shell: bash
+    env:
+      # swift.org's Windows installers are published under full patch
+      # versions only, so this cannot be SWIFT_VERSION.
+      WINDOWS_SWIFT_VERSION: "6.4.2"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Swift ${{ env.SWIFT_VERSION }}
+      - name: Install Swift ${{ env.WINDOWS_SWIFT_VERSION }}
         uses: compnerd/gha-setup-swift@v0.5.1
         with:
-          swift-version: swift-${{ env.SWIFT_VERSION }}-release
-          swift-build: ${{ env.SWIFT_VERSION }}-RELEASE
+          swift-version: swift-${{ env.WINDOWS_SWIFT_VERSION }}-release
+          swift-build: ${{ env.WINDOWS_SWIFT_VERSION }}-RELEASE
+          build_arch: ${{ matrix.arch }}
 
       - name: Install packaging tools
         run: choco install zip --no-progress -y
