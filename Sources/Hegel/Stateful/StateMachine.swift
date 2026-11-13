@@ -66,6 +66,7 @@ public struct StateMachine<Model>: Sendable {
     struct Invariant: Sendable {
         let name: String
         let everyStep: Bool
+        let pauseFaults: Bool
         let body: Body
 
         enum Body: Sendable {
@@ -112,12 +113,25 @@ public struct StateMachine<Model>: Sendable {
     /// case, at a step it chooses, or after every step with `everyStep`.
     /// Checking after every step finds a failure at the step that causes it,
     /// at the cost of running the check `steps` times as often.
+    ///
+    /// With `pauseFaults`, fault injection is paused while the invariant
+    /// runs, so that inside Antithesis no fault lands in the middle of the
+    /// check. Outside Antithesis it changes nothing. See
+    /// `TestCase.withFaultsPaused(_:)`.
     public func invariant(
         _ name: String,
         everyStep: Bool = false,
+        pauseFaults: Bool = false,
         _ check: @escaping @Sendable (_ model: Model, _ tc: TestCase) throws -> Void
     ) -> StateMachine {
-        adding(Invariant(name: name, everyStep: everyStep, body: .sync(check)))
+        adding(
+            Invariant(
+                name: name,
+                everyStep: everyStep,
+                pauseFaults: pauseFaults,
+                body: .sync(check)
+            )
+        )
     }
 
     /// Adds an async invariant. A machine with async invariants runs with
@@ -125,9 +139,17 @@ public struct StateMachine<Model>: Sendable {
     public func invariant(
         _ name: String,
         everyStep: Bool = false,
+        pauseFaults: Bool = false,
         _ check: @escaping @Sendable (_ model: Model, _ tc: TestCase) async throws -> Void
     ) -> StateMachine {
-        adding(Invariant(name: name, everyStep: everyStep, body: .async(check)))
+        adding(
+            Invariant(
+                name: name,
+                everyStep: everyStep,
+                pauseFaults: pauseFaults,
+                body: .async(check)
+            )
+        )
     }
 
     private func adding(_ rule: Rule) -> StateMachine {
@@ -241,6 +263,7 @@ public struct StateMachine<Model>: Sendable {
                 preconditionFailure("async invariant in a sync run")
             }
             let block = try run.tc.block(indent: 2)
+            try run.startCheck(invariant)
             var failure: (any Error)?
             do {
                 try check(model, block)
@@ -259,6 +282,7 @@ public struct StateMachine<Model>: Sendable {
     ) async throws {
         for invariant in try run.dueInvariants(sampling: sampling, final: final) {
             let block = try run.tc.block(indent: 2)
+            try run.startCheck(invariant)
             var failure: (any Error)?
             do {
                 switch invariant.body {
@@ -366,12 +390,29 @@ final class SequentialRun<Model> {
             .map { invariants[$0] }
     }
 
-    /// Closes an invariant check that returned or threw `error`.
+    /// Opens an invariant check: pauses fault injection for one declared
+    /// with `pauseFaults`.
+    func startCheck(_ invariant: StateMachine<Model>.Invariant) throws {
+        if invariant.pauseFaults {
+            try tc.pauseFaults()
+        }
+    }
+
+    /// Closes an invariant check that returned or threw `error`. Resumes
+    /// fault injection first; when the check failed, its failure is the
+    /// one reported even if resuming fails too.
     func finishCheck(
         _ invariant: StateMachine<Model>.Invariant,
         _ block: TestCase,
         _ error: (any Error)?
     ) throws {
+        if invariant.pauseFaults {
+            if error == nil {
+                try tc.unpauseFaults()
+            } else {
+                try? tc.unpauseFaults()
+            }
+        }
         let trailer = "Invariant \(invariant.name) failed:"
         if let error {
             try rethrowStepError(error, trailer: trailer, root: tc, block: block)

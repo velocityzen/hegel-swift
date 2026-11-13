@@ -411,6 +411,10 @@ Expectation failed: s.real.pop() == s.model.removeLast()
 - Every invariant is checked on the initial and the final state. Between steps, the engine
   checks each one about once per test case. Pass `everyStep: true` to check it after every step,
   which finds the failure at the step that causes it.
+- Under [Antithesis](https://antithesis.com/), pass `pauseFaults: true` to pause fault injection
+  while an invariant runs, so no fault lands in the middle of the check. Outside Antithesis it
+  changes nothing. `tc.withFaultsPaused { … }` does the same for any other check. Both work on a
+  `ConcurrentStateMachine` too.
 - The run stops at the first failing step, whether it threw or an `#expect` failed.
 - `steps:` sets how many steps the engine aims for (50 by default). `weight:` makes a rule more
   or less likely.

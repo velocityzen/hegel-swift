@@ -60,6 +60,7 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
     struct Invariant: Sendable {
         let name: String
         let everyStep: Bool
+        let pauseFaults: Bool
         let check: @Sendable (Model, TestCase) async throws -> Void
     }
 
@@ -103,13 +104,21 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
     /// Every invariant is checked on the initial and final states. Between
     /// rounds, the engine checks each one about once per test case, or after
     /// every round with `everyStep`.
+    ///
+    /// With `pauseFaults`, fault injection is paused while the invariant
+    /// runs, so that inside Antithesis no fault lands in the middle of the
+    /// check. Outside Antithesis it changes nothing. See
+    /// `TestCase.withFaultsPaused(_:)`.
     public func invariant(
         _ name: String,
         everyStep: Bool = false,
+        pauseFaults: Bool = false,
         _ check: @escaping @Sendable (_ model: Model, _ tc: TestCase) async throws -> Void
     ) -> ConcurrentStateMachine {
         var machine = self
-        machine.invariants.append(Invariant(name: name, everyStep: everyStep, check: check))
+        machine.invariants.append(
+            Invariant(name: name, everyStep: everyStep, pauseFaults: pauseFaults, check: check)
+        )
         return machine
     }
 
@@ -263,11 +272,23 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
             let invariant = invariants[index]
             let trailer = "Invariant \(invariant.name) failed:"
             let block = try tc.block(indent: 2)
+            if invariant.pauseFaults {
+                try tc.pauseFaults()
+            }
             var failure: (any Error)?
             do {
                 try await invariant.check(model, block)
             } catch {
                 failure = error
+            }
+            // Resume fault injection; a failed check is reported even if
+            // resuming fails too.
+            if invariant.pauseFaults {
+                if failure == nil {
+                    try tc.unpauseFaults()
+                } else {
+                    try? tc.unpauseFaults()
+                }
             }
             if let failure {
                 try rethrowStepError(failure, trailer: trailer, root: tc, block: block)
