@@ -104,21 +104,21 @@ extension TestCase {
         cancellation.arm { task.cancel() }
         let result: Result<Value, any Error>
         if let limit {
-            let effectiveLimit = stalls?.limit(for: limit) ?? limit
+            let effectiveLimit = run?.stalls.limit(for: limit) ?? limit
             guard let ended = await cancellation.result(of: task, endingWithin: effectiveLimit)
             else {
-                stalls?.noteStall()
-                let run = cancellation.snapshot
-                note(run.description)
+                run?.stalls.noteStall()
+                let snapshot = cancellation.snapshot
+                note(snapshot.description)
                 throw StillRunning(
                     limit: effectiveLimit,
-                    cancelledAt: run.cancelledAt ?? 0,
-                    label: run.label,
+                    cancelledAt: snapshot.cancelledAt ?? 0,
+                    label: snapshot.label,
                     location: "\(fileID):\(line)"
                 )
             }
             if let took = cancellation.endedAfterCancel {
-                stalls?.record(took)
+                run?.stalls.record(took)
             }
             result = ended
         } else {
@@ -129,12 +129,12 @@ extension TestCase {
             }
         }
 
-        let run = cancellation.snapshot
-        note(run.description)
+        let snapshot = cancellation.snapshot
+        note(snapshot.description)
         return CancellationRun(
             value: try result.get(),
-            cancelledAt: run.cancelledAt,
-            checkpoints: run.checkpoints
+            cancelledAt: snapshot.cancelledAt,
+            checkpoints: snapshot.checkpoints
         )
     }
 }
@@ -245,6 +245,16 @@ public final class Cancellation: Sendable {
         state.withLock { $0.endedAfterCancel }
     }
 
+    /// Starts the time since the drawn cancel over, if it has landed: the
+    /// process was starved of threads, so the body couldn't run.
+    func restartClock() {
+        state.withLock { state in
+            if state.cancelledTime != nil, !state.ended {
+                state.cancelledTime = .now
+            }
+        }
+    }
+
     /// Whether the body is still running `limit` after the drawn cancel.
     func isStillRunning(after limit: Duration) -> Bool {
         state.withLock { state in
@@ -268,9 +278,13 @@ public final class Cancellation: Sendable {
         }
         let watchdog = Task.detached {
             let poll = min(max(limit / 20, .milliseconds(1)), .milliseconds(10))
+            var watch = StarvationWatch(limit: limit, poll: poll)
             while !Task.isCancelled {
                 try? await Task.sleep(for: poll)
-                if self.isStillRunning(after: limit) {
+                if watch.wasStarved() {
+                    // The body was likely held back too: that time isn't its.
+                    self.restartClock()
+                } else if self.isStillRunning(after: limit) {
                     delivery.yield(.stillRunning)
                     return
                 }
