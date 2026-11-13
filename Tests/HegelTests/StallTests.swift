@@ -1,4 +1,5 @@
-import Hegel
+import Foundation
+@testable import Hegel
 import Synchronization
 import Testing
 
@@ -159,4 +160,45 @@ struct StallTests {
         #expect(hangs.started >= 10)
         #expect(elapsed < full * hangs.started * 3 / 4)
     }
+}
+
+/// Starving the whole thread pool would disturb every other test running
+/// alongside, so the watchdog's starvation check is tested on its own.
+@Suite("stall watchdog starvation")
+struct StarvationWatchTests {
+    @Test("a check that wakes on time isn't starved")
+    func onTime() async throws {
+        // A 1 s tolerance: a loaded machine can wake a 10 ms sleep tens of
+        // milliseconds late.
+        var watch = StarvationWatch(limit: .seconds(4), poll: .milliseconds(10))
+        try await Task.sleep(for: .milliseconds(10))
+        let starved = watch.wasStarved()
+        #expect(!starved)
+    }
+
+    @Test("a check that wakes far later than it asked for is starved, and the next isn't")
+    func late() async throws {
+        var watch = StarvationWatch(limit: .milliseconds(100), poll: .milliseconds(10))
+        // The check's thread is held, as a starved pool holds the watchdog:
+        // 100 ms, past the 10 ms poll and 50 ms tolerance.
+        blockThread(seconds: 0.1)
+        let late = watch.wasStarved()
+        let next = watch.wasStarved()
+        #expect(late)
+        #expect(!next)
+    }
+
+    @Test("lateness within a quarter of the limit, or 50 ms, still counts against the work")
+    func tolerance() {
+        var watch = StarvationWatch(limit: .seconds(4), poll: .milliseconds(10))
+        // 100 ms late, under the 1 s tolerance of a 4 s limit.
+        blockThread(seconds: 0.1)
+        let starved = watch.wasStarved()
+        #expect(!starved)
+    }
+}
+
+/// Blocks the calling thread.
+private func blockThread(seconds: Double) {
+    Thread.sleep(forTimeInterval: seconds)
 }
