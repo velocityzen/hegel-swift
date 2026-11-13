@@ -86,8 +86,9 @@ Details and patterns: [references/stateful-and-faults.md](references/stateful-an
 5. **Write the test** following the conventions below.
 6. **Check reach before trusting green.** Run with statistics
    (`HEGEL_STATISTICS=1 swift test --filter <TestName>`) and confirm every reach claim's event
-   occurs in a healthy share of cases. Fix generators first; a property that never reaches its
-   state passes vacuously.
+   occurs in a healthy share of cases, then list those events in `property(reaching:)` so a
+   regression fails the test. Fix generators first; a property that never reaches its state
+   passes vacuously.
 7. **Mutation-check** the properties that matter most —
    [references/mutation-check.md](references/mutation-check.md).
 8. **Run deep once** before calling it done: `HEGEL_TEST_CASES=10000 swift test --filter <Suite>`.
@@ -165,7 +166,7 @@ Before calling the work done — with a fresh-context sub-agent if available —
 - No randomness bypasses `tc.draw`. No range is narrower than the API's contract without a stated
   reason. Configured limits have menus. Policy is drawn per test case where the test has a policy.
   Empty, absent and boundary values are reachable.
-- Every reach claim has an event or counter and was observed in a statistics run.
+- Every reach claim is an event listed in `property(reaching:)`, observed in a statistics run.
 - Checks live at distinct sites; helpers forward `sourceLocation`; bounds are used wherever the
   test can't know the exact outcome; no reach claim is the negation of a check.
 - State machine rules don't `assume` away inputs the system should handle; cheap invariants run

@@ -131,7 +131,7 @@ extension TestCase {
         _ body: @escaping @Sendable (_ heartbeat: Heartbeat) async throws -> Value
     ) async throws -> Value {
         precondition(limit > .zero, "a stall limit must be positive")
-        let effectiveLimit = stalls?.limit(for: limit) ?? limit
+        let effectiveLimit = run?.stalls.limit(for: limit) ?? limit
         let heartbeat = Heartbeat()
         let (outcomes, delivery) = AsyncStream.makeStream(of: StallOutcome<Value>.self)
         let work = Task.detached {
@@ -147,9 +147,13 @@ extension TestCase {
         }
         let watchdog = Task.detached {
             let poll = min(max(effectiveLimit / 20, .milliseconds(1)), .milliseconds(10))
+            var watch = StarvationWatch(limit: effectiveLimit, poll: poll)
             while !Task.isCancelled {
                 try? await Task.sleep(for: poll)
-                if heartbeat.sinceLastBeat >= effectiveLimit {
+                if watch.wasStarved() {
+                    // The work was likely held back too: that time isn't its.
+                    heartbeat.restart()
+                } else if heartbeat.sinceLastBeat >= effectiveLimit {
                     delivery.yield(.stalled)
                     return
                 }
@@ -164,11 +168,11 @@ extension TestCase {
         watchdog.cancel()
         switch outcome {
             case .finished(let result, let longestGap)?:
-                stalls?.record(longestGap)
+                run?.stalls.record(longestGap)
                 return try result.get()
             case .stalled?:
                 work.cancel()
-                stalls?.noteStall()
+                run?.stalls.noteStall()
                 throw Stalled(
                     limit: effectiveLimit,
                     beats: heartbeat.count,
@@ -179,6 +183,36 @@ extension TestCase {
                 work.cancel()
                 throw CancellationError()
         }
+    }
+}
+
+/// Tells a watchdog when its own wake-up came far later than it asked for.
+///
+/// A watchdog and the work it watches share the same threads. When those
+/// threads are all busy, such as with blocking calls from other tests on a
+/// small CI machine, neither runs: the work can't make progress, and when
+/// the watchdog finally wakes, the work looks stuck. A late wake-up means the
+/// process was starved, so the time since the last check can't be blamed on
+/// the work. Work that is really stuck is still caught, by the next check
+/// that wakes on time.
+struct StarvationWatch {
+    /// How late a wake-up may be before it counts as starved: a quarter of
+    /// the limit, and at least 50 milliseconds, so ordinary scheduling
+    /// jitter still counts against the work.
+    private let tolerance: Duration
+    private let poll: Duration
+    private var lastCheck = ContinuousClock.now
+
+    init(limit: Duration, poll: Duration) {
+        self.poll = poll
+        tolerance = max(limit / 4, .milliseconds(50))
+    }
+
+    /// Whether this check woke much later than `poll` after the last one.
+    mutating func wasStarved() -> Bool {
+        let now = ContinuousClock.now
+        defer { lastCheck = now }
+        return lastCheck.duration(to: now) > poll + tolerance
     }
 }
 

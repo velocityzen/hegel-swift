@@ -16,7 +16,7 @@ states where they could fail. A property test usually has three kinds of stateme
 | Must hold on every evaluation | `#expect` / `#require` in the body, a rule, or an `invariant` |
 | Must hold whenever an optional path runs | `#expect` inside the branch that took the path |
 | Must never happen | `Issue.record("...")` in the forbidden branch |
-| Must happen at least once, with a meaningful condition | `tc.event` plus statistics; a reach counter checked after `property` |
+| Must happen at least once, with a meaningful condition | `tc.event`, claimed with `property(reaching:)`; statistics to see how often |
 | Must reach this outcome | the same, recording the outcome |
 | A comparison with both operands in the report | `#expect(a < b)` written inline — Swift Testing prints both operands |
 | Steer generation toward a rare state | `try tc.target(score, label:)` |
@@ -120,45 +120,46 @@ and read the share of generated cases in which each event occurred, and the dist
 numeric observation. A share of 0% is a generator gap; a share of 1% means the property is barely
 exercised.
 
-**Reach counters** — the guard that keeps it from regressing. Count in the property and check after
-it returns:
+**`property(reaching:)`** — the guard that keeps it from regressing. List the event labels the
+property must record; the run fails when no passing generated case recorded one of them:
 
 ```swift
 /// Eviction keeps the most recently written key.
 @Test(.hegel)
 func evictionKeepsMostRecent() throws {
-    var filledPastCapacity = 0
-    try property { tc in
+    try property(reaching: ["filled past capacity"]) { tc in
         let capacity = try tc.draw(.int(in: 1...4), named: "capacity")
         let keys = try tc.draw(.array(of: .int(in: 0...9)), named: "keys")
         let cache = LRUCache<Int, Int>(capacity: capacity)
         for key in keys { cache.put(key, key) }
         if Set(keys).count > capacity {
-            filledPastCapacity += 1
             try tc.event("filled past capacity")
         }
         if let last = keys.last {
             #expect(cache.get(last) == last)
         }
     }
-    #expect(filledPastCapacity > 0, "no test case filled the cache past capacity")
 }
 ```
 
-- Rules and invariants of a state machine are `@Sendable` and can't capture a local counter. Keep
-  the counter in the model — `run` returns the final model — or use events.
+- The event is the claim, so the two can't drift apart. Events recorded by `concurrently`
+  workers and by state machine rules and invariants count, so no counter has to live in a model.
+- Only passing generated cases count: a rejected case's events don't, and neither do explicit
+  examples', since the claim is about what generation reaches.
+- A run that can't judge the claims doesn't: one that fails, replays a reproduce blob or a stored
+  failure that still fails, or runs only explicit examples.
 - Assert reach only for states your statistics show in a healthy share of cases. A claim on a
   1-in-500 state is flaky under a random seed; make the generator reach it more often instead.
-- Explicit examples count toward a counter. A run that replays a reproduce blob runs one case, so
-  its reach checks mean nothing.
+- `Property.run(reaching:)` does the same without Swift Testing: it throws `HegelError.unreached`.
 
 **A reach claim asserts the precondition, never the violation.** Don't count the bad state that a
 check forbids: on a correct system it never happens, and the claim fails. Count each part of the
 precondition separately:
 
-- Bad: `#expect(!(stale && served))` with a counter for `stale && served`.
-- Good: the same check, with one counter for `stale` and one for `served`. Both rise on a correct
-  system, and together they show the test reaches the window where a stale read could be served.
+- Bad: `#expect(!(stale && served))` with a claimed event for `stale && served`.
+- Good: the same check, with one claimed event for `stale` and one for `served`. Both occur on a
+  correct system, and together they show the test reaches the window where a stale read could be
+  served.
 
 **Prefer outcome markers over entry markers.** "Eviction happened" says more than "`put` was
 called". Don't stack a general marker before a specific one that already proves the path.
