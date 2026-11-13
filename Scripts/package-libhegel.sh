@@ -153,7 +153,8 @@ cat > "$bundle/info.json" << JSON
   }
 }
 JSON
-(cd "$out" && zip -qry -X CHegel.artifactbundle.zip CHegel.artifactbundle)
+# No -y: the bundle has no symlinks, and the Windows zip lacks the flag.
+(cd "$out" && zip -qr -X CHegel.artifactbundle.zip CHegel.artifactbundle)
 
 checksum() {
     if command -v swift > /dev/null; then
