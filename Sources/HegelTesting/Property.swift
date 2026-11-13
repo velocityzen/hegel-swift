@@ -59,9 +59,10 @@ public func property(
         }
         return
     }
-    let outcome: PropertyOutcome
-    do {
-        outcome = try Property.run(
+    // A helper rather than a catch here: Swift 6.3's compiler crashes on a
+    // catch around a closure that captures `body`.
+    let judged = try runner.judgingClaims { () throws(HegelError) in
+        try Property.run(
             settings: scope.settings,
             databaseKey: scope.databaseKey,
             location: scope.location,
@@ -70,8 +71,8 @@ public func property(
             output: scope.output,
             { tc in try runner.runCase(tc, nil, body) }
         )
-    } catch let unreached where unreached.isUnreached {
-        runner.recordUnreached(unreached)
+    }
+    guard let outcome = judged else {
         return
     }
     try runner.report(outcome) { replay, recorder in
@@ -110,9 +111,10 @@ public func property(
         }
         return
     }
-    let outcome: PropertyOutcome
-    do {
-        outcome = try await Property.run(
+    // A helper rather than a catch here: Swift 6.3's compiler crashes on a
+    // catch around a closure that captures `body`.
+    let judged = try await runner.judgingClaims { () async throws(HegelError) in
+        try await Property.run(
             settings: scope.settings,
             databaseKey: scope.databaseKey,
             location: scope.location,
@@ -121,8 +123,8 @@ public func property(
             output: scope.output,
             { tc in try await runner.runCase(tc, nil, body) }
         )
-    } catch let unreached where unreached.isUnreached {
-        runner.recordUnreached(unreached)
+    }
+    guard let outcome = judged else {
         return
     }
     try await runner.report(outcome) { replay, recorder in
@@ -286,8 +288,38 @@ struct PropertyRunner {
 
     /// Replays a blob the `.hegel(reproducing:)` trait gave.
     /// Records a run's unmet reach claims as an issue at the property.
-    func recordUnreached(_ error: HegelError) {
+    /// Runs a property, recording an unmet reach claim as an issue: the
+    /// result is then nil.
+    func judgingClaims(
+        _ run: () throws(HegelError) -> PropertyOutcome
+    ) throws(HegelError) -> PropertyOutcome? {
+        do {
+            return try run()
+        } catch {
+            return try recordUnreached(error)
+        }
+    }
+
+    /// Runs a property, recording an unmet reach claim as an issue: the
+    /// result is then nil.
+    func judgingClaims(
+        _ run: () async throws(HegelError) -> PropertyOutcome
+    ) async throws(HegelError) -> PropertyOutcome? {
+        do {
+            return try await run()
+        } catch {
+            return try recordUnreached(error)
+        }
+    }
+
+    /// Records `error` as an issue if it is an unmet reach claim, and
+    /// rethrows it otherwise.
+    private func recordUnreached(_ error: HegelError) throws(HegelError) -> PropertyOutcome? {
+        guard error.isUnreached else {
+            throw error
+        }
         Issue.record(Comment(rawValue: error.description), sourceLocation: sourceLocation)
+        return nil
     }
 
     func finish(replaying blob: String, _ run: (CaseRecorder) throws -> PropertyOutcome) throws {
