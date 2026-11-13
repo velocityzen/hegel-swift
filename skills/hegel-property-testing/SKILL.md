@@ -92,6 +92,7 @@ Details and patterns: [references/stateful-and-faults.md](references/stateful-an
 7. **Mutation-check** the properties that matter most —
    [references/mutation-check.md](references/mutation-check.md).
 8. **Run deep once** before calling it done: `HEGEL_TEST_CASES=10000 swift test --filter <Suite>`.
+   The variable wins over a test's own `.hegel(testCases:)`, so every property runs deep.
 
 For a feature still in development, write properties for the planned behavior too and mark those
 tests `.disabled("waiting on <part>")`. Enable each as its code lands; delete properties the
@@ -136,7 +137,8 @@ with no mutation in it.
 - Create the system under test inside the test case (or in the model passed to `run`). Never
   share it, a singleton, or a static cache across test cases.
 - Keep the body cheap: a passing `repeat` runs until the budget is used, often thousands of
-  iterations. Lower `testCases` for an expensive property rather than shrinking its domain.
+  iterations. Lower `testCases` for an expensive property rather than shrinking its domain;
+  a deep run's `HEGEL_TEST_CASES` still overrides it.
 - Keep generated inputs inside the API's trap contract. A `precondition`, `fatalError` or
   force-unwrap reached by a generated input kills the test process: Hegel can't catch it or
   shrink it. Inputs that should produce an error belong in the property; inputs documented to

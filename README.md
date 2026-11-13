@@ -598,7 +598,10 @@ A run starts from the settings the engine resolves, in this order:
 2. a `hegel.toml` in the package root or above;
 3. `HEGEL_*` environment variables.
 
-Settings given in Swift override that result field by field.
+Settings given in Swift override that result field by field, with one exception: an explicit
+`HEGEL_TEST_CASES` wins over a `testCases` set in Swift. A test's own count is its default, and
+`HEGEL_TEST_CASES=10000 swift test` runs every property deeper, those with their own count too. A
+`hegel.toml` profile's `test_cases` doesn't, so a test's own count wins over it.
 
 ```swift
 @Test(.hegel(testCases: 500, seed: 42))

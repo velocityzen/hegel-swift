@@ -1,17 +1,31 @@
 import CHegel
 
+#if canImport(FoundationEssentials)
+    import FoundationEssentials
+#else
+    import Foundation
+#endif
+
 /// Overrides for one property run.
 ///
 /// Every field is optional. A run starts from the settings the engine
 /// resolves (its built-in profiles, `hegel.toml`, and the `HEGEL_*`
 /// environment variables, as described in the libhegel reference), and only
 /// the fields set here replace what that resolution produced.
+///
+/// The one exception is `testCases`: a `HEGEL_TEST_CASES` environment
+/// variable wins over it, so `HEGEL_TEST_CASES=10000 swift test` runs every
+/// property deeper, including those whose test count is set in Swift.
 public struct Settings: Sendable, Equatable {
     /// The profile to start from instead of the default one: `development`,
     /// `ci`, `workload`, `base`, or one defined in `hegel.toml`.
     public var profile: String?
     /// The number of valid test cases to run before the property is
     /// considered to hold. Rejected cases do not count.
+    ///
+    /// This is the property's own count, so it wins over `hegel.toml`
+    /// profiles, but a `HEGEL_TEST_CASES` environment variable, chosen for
+    /// one run, wins over it.
     public var testCases: Int?
     /// A fixed seed for generation.
     public var seed: UInt64?
@@ -94,6 +108,24 @@ public struct Settings: Sendable, Equatable {
             nondeterminism: other.nondeterminism ?? nondeterminism,
             backend: other.backend ?? backend
         )
+    }
+}
+
+extension Settings {
+    /// The environment variable that sets the number of test cases for a run.
+    static let testCasesVariable = "HEGEL_TEST_CASES"
+
+    /// These settings with the fields an explicit run-time choice in
+    /// `environment` wins over left to the engine: `testCases`, when
+    /// `HEGEL_TEST_CASES` is set. The engine ignores an empty variable, so
+    /// this does too.
+    func yieldingTo(environment: [String: String]) -> Settings {
+        guard let value = environment[Self.testCasesVariable], !value.isEmpty else {
+            return self
+        }
+        var settings = self
+        settings.testCases = nil
+        return settings
     }
 }
 
@@ -219,7 +251,11 @@ final class EngineSettings {
         }
         raw = handle
         do {
-            try apply(settings, databaseKey: databaseKey, location: location)
+            try apply(
+                settings.yieldingTo(environment: ProcessInfo.processInfo.environment),
+                databaseKey: databaseKey,
+                location: location
+            )
         } catch {
             throw .usage(error.message)
         }
