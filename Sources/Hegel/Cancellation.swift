@@ -140,8 +140,8 @@ extension TestCase {
                     if let took = cancellation.endedAfterCancel {
                         run?.stalls.record(took)
                     }
-                    if limits.stallsAfter != nil {
-                        run?.stalls.record(cancellation.heartbeat.longestGap)
+                    if limits.stallsAfter != nil, let gap = cancellation.longestGap {
+                        run?.stalls.record(gap)
                     }
                     result = ended
                 case .stillRunning(let after):
@@ -215,6 +215,8 @@ public final class Cancellation: Sendable {
         var cancelledTime: ContinuousClock.Instant?
         /// How long after the drawn cancel the body ended.
         var endedAfterCancel: Duration?
+        /// The longest the body went without a beat, as of when it ended.
+        var longestGap: Duration?
         var ended = false
 
         var description: String {
@@ -286,10 +288,19 @@ public final class Cancellation: Sendable {
     /// Notes that the body has ended, in the body's task: the time its
     /// waiter takes to be scheduled is not the body's.
     func noteEnded() {
+        let longestGap = heartbeat.longestGap
         state.withLock { state in
             state.ended = true
+            state.longestGap = longestGap
             state.endedAfterCancel = state.cancelledTime.map { $0.duration(to: .now) }
         }
+    }
+
+    /// The longest the body went without a beat, measured in its own task
+    /// as it ended: the time its waiter takes to be scheduled is not the
+    /// body's.
+    var longestGap: Duration? {
+        state.withLock { $0.longestGap }
     }
 
     /// How long after the drawn cancel the body ended, if it was cancelled.
