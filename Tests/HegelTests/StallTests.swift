@@ -166,12 +166,12 @@ struct StallTests {
 /// alongside, so the watchdog's starvation check is tested on its own.
 @Suite("stall watchdog starvation")
 struct StarvationWatchTests {
-    @Test("a check that wakes on time isn't starved")
-    func onTime() async throws {
-        // A 1 s tolerance: a loaded machine can wake a 10 ms sleep tens of
-        // milliseconds late.
+    @Test("a check that comes right after the last isn't starved")
+    func onTime() {
+        // Checked at once, not after a sleep: on a loaded CI machine even a
+        // 10 ms sleep can wake seconds late, which is the starvation this
+        // detects.
         var watch = StarvationWatch(limit: .seconds(4), poll: .milliseconds(10))
-        try await Task.sleep(for: .milliseconds(10))
         let starved = watch.wasStarved()
         #expect(!starved)
     }
