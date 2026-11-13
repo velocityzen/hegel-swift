@@ -55,7 +55,7 @@ Expectation failed: mySort(xs) == xs.sorted()
 Requirements:
 
 - Swift 6.3 or later
-- macOS 26 or later on Apple silicon, or Linux (x86_64 or arm64)
+- macOS 26 or later on Apple silicon, Linux (x86_64 or arm64), or Windows (x86_64 or arm64)
 
 Add the package to `Package.swift`, and its products to your **test** targets only:
 
@@ -608,8 +608,8 @@ is checked in at [`libhegel/hegel.h`](libhegel/hegel.h).
 
 - **[`Scripts/package-libhegel.sh`](Scripts/package-libhegel.sh)** downloads a libhegel release
   and checks every file against upstream's `.sha256`. It repackages the library as
-  `Artifacts/CHegel.xcframework` for macOS and `Artifacts/CHegel.artifactbundle` for Linux, a
-  static-library bundle. While `Artifacts/` exists, `Package.swift` builds against it. Without
+  `Artifacts/CHegel.xcframework` for macOS and `Artifacts/CHegel.artifactbundle` for Linux and
+  Windows, a static-library bundle. While `Artifacts/` exists, `Package.swift` builds against it. Without
   it, `Package.swift` downloads the zips from this repository's `libhegel-<version>` release,
   checked against the checksums in `Package.swift`.
 - **The [libhegel bump](.github/workflows/libhegel-bump.yml) workflow** runs daily. When
@@ -621,8 +621,8 @@ is checked in at [`libhegel/hegel.h`](libhegel/hegel.h).
 
   The `hegel.h` diff in that PR is the engine's ABI change to review. Add a `BUMP_TOKEN` secret
   (a token that can write contents and pull requests) for CI to run on those PRs as well.
-- **[CI](.github/workflows/ci.yml)** lints, then tests on macOS and on Linux (Swift 6.3 and 6.4,
-  amd64 and arm64) against the pinned version. On `main`, it also checks that the released
+- **[CI](.github/workflows/ci.yml)** lints, then tests on macOS, on Linux (Swift 6.3 and 6.4,
+  amd64 and arm64) and on Windows (amd64 and arm64) against the pinned version. On `main`, it also checks that the released
   binaries resolve.
 
 **First setup.** The release assets don't exist until the bump workflow publishes them. Run it
@@ -632,7 +632,7 @@ release's checksums.
 ## Limitations and roadmap
 
 - **Platforms.** upstream publishes libhegel for macOS on Apple silicon, Linux and Windows. There
-  are no iOS, tvOS, watchOS or visionOS slices yet, so property tests run on macOS and Linux only.
+  are no iOS, tvOS, watchOS or visionOS slices yet, so property tests run on macOS, Linux and Windows only.
   iOS simulator slices can be built from the Rust sources and added to the XCFramework; the other
   Apple platforms need nightly Rust.
 - **Traps.** A `fatalError`, failed `precondition` or force-unwrap in the code under test ends the
