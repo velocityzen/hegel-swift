@@ -307,9 +307,14 @@ try await property { tc in
   then, its task is abandoned and the call throws `StillRunning`, which says where the cancel
   landed and shrinks like any failure. Its origin is the call site. A body that was never cancelled
   may take as long as it needs.
-- As with stall detection, once a case has stayed running, the cases tried while shrinking get a
-  shorter limit, based on how long passing cases took to end after their cancel. Reported cases get
-  the full limit.
+- `endsWithin` doesn't cover the run before its cancel, or a run that isn't cancelled at all (a
+  quarter of them). Pass `stallsAfter:` to catch a hang there too: every `checkpoint()` and every
+  `cancellation.beat()` counts as progress, and a body that goes that long without either fails with
+  `Stalled`, as with stall detection. Once the cancel lands, `endsWithin` takes over if it's given.
+  `withStallDetection` can't be nested inside the body, which can't use the test case.
+- As with stall detection, once a case has stalled or stayed running, the cases tried while
+  shrinking get shorter limits, based on how passing cases went. Reported cases get the full
+  limits.
 - `probe.hang()` runs until its task is cancelled, for at most a minute (`hang(atMost:)`), and
   returns whether it was cancelled. `started`, `cancelled` and `uncancelled` count the hangs. A
   cancel is counted in the hang's cancellation handler, as the cancel is made, not when the hang's

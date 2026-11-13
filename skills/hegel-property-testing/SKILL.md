@@ -60,7 +60,7 @@ about proving both work instead of trusting a green run.
 | A sequence of operations with no state-dependent inputs                | `.array(of: op)` folded over the system and a model; `tc.repeat` only for a cheap body |
 | Operations whose inputs depend on earlier results (handles, keys, IDs) | `StateMachine` with a model, plus `Pool`                                               |
 | Thread safety, actor reentrancy, races                                 | `ConcurrentStateMachine`, or `tc.concurrently(workers:)`                               |
-| Cancellation handling and cleanup                                      | `tc.withRandomCancellation(endsWithin:)` with checkpoints, and a `CancellationProbe`   |
+| Cancellation handling and cleanup                                      | `tc.withRandomCancellation(endsWithin:stallsAfter:)` and a `CancellationProbe`         |
 | Async code that can hang: lost wakeups, deadlocks                      | `tc.withStallDetection(after:)` around the work, with `heartbeat.beat()` per step      |
 | Failing dependencies, lost acknowledgements, crash and restart         | a test double driven by a drawn fault schedule, inside a `StateMachine`                |
 

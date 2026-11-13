@@ -57,10 +57,29 @@ extension TestCase {
     /// }
     /// ```
     ///
-    /// As with `withStallDetection`, once a test case has stayed running,
-    /// the cases the engine tries while shrinking get a shorter limit,
-    /// based on how long passing cases took to end after their cancel. The
-    /// cases a failure report is built from still get the full one.
+    /// `endsWithin` says nothing about the run before its cancel, or a run
+    /// the draw doesn't cancel at all, a quarter of them. Pass `stallsAfter`
+    /// to catch a hang there too: every `checkpoint()` counts as progress,
+    /// and so does `cancellation.beat()`, for steps that aren't cancel
+    /// points. When `body` goes that long without either, its task is
+    /// cancelled and abandoned and the test case fails with `Stalled`, as
+    /// with `withStallDetection`. Once the drawn cancel lands, `endsWithin`
+    /// takes over if it is given:
+    ///
+    /// ```swift
+    /// let run = try await tc.withRandomCancellation(
+    ///     endsWithin: .seconds(5),
+    ///     stallsAfter: .seconds(5)
+    /// ) { cancellation in
+    ///     try await pipe.run(onElement: { _ in cancellation.checkpoint() })
+    /// }
+    /// ```
+    ///
+    /// As with `withStallDetection`, once a test case has stalled or stayed
+    /// running, the cases the engine tries while shrinking get shorter
+    /// limits, based on how long passing cases went between beats and took
+    /// to end after their cancel. The cases a failure report is built from
+    /// still get the full ones.
     ///
     /// - Parameters:
     ///   - checkpoints: The cancel points to draw from, when the number of
@@ -69,12 +88,16 @@ extension TestCase {
     ///   - limit: How long `body` may keep running after the drawn cancel,
     ///     or nil to wait for it however long it takes. Allow for a busy
     ///     machine: a few seconds.
+    ///   - stallLimit: How long `body` may go without a checkpoint or a
+    ///     beat before the drawn cancel lands, or for its whole run when
+    ///     `endsWithin` is nil; nil for no limit.
     ///   - body: The code to cancel. It gets the `Cancellation` to call
     ///     `checkpoint()` on.
     public func withRandomCancellation<Value: Sendable>(
         checkpoints: ClosedRange<Int>? = nil,
         named name: String = "cancelAfter",
         endsWithin limit: Duration? = nil,
+        stallsAfter stallLimit: Duration? = nil,
         fileID: String = #fileID,
         line: Int = #line,
         _ body: @escaping @Sendable (_ cancellation: Cancellation) async throws -> Value
@@ -84,6 +107,9 @@ extension TestCase {
         }
         if let limit {
             precondition(limit > .zero, "an endsWithin limit must be positive")
+        }
+        if let stallLimit {
+            precondition(stallLimit > .zero, "a stall limit must be positive")
         }
         let index: Gen<Int> =
             checkpoints.map { .int(in: $0) } ?? .oneOf(.int(in: 0...16), .int(in: 0...Int.max))
@@ -98,29 +124,46 @@ extension TestCase {
         let cancellation = Cancellation(at: at)
         let task = Task {
             await cancellation.waitUntilArmed()
+            cancellation.heartbeat.restart()
             defer { cancellation.noteEnded() }
             return try await body(cancellation)
         }
         cancellation.arm { task.cancel() }
         let result: Result<Value, any Error>
-        if let limit {
-            let effectiveLimit = run?.stalls.limit(for: limit) ?? limit
-            guard let ended = await cancellation.result(of: task, endingWithin: effectiveLimit)
-            else {
-                run?.stalls.noteStall()
-                let snapshot = cancellation.snapshot
-                note(snapshot.description)
-                throw StillRunning(
-                    limit: effectiveLimit,
-                    cancelledAt: snapshot.cancelledAt ?? 0,
-                    label: snapshot.label,
-                    location: "\(fileID):\(line)"
-                )
+        if limit != nil || stallLimit != nil {
+            let limits = Cancellation.Limits(
+                endsWithin: limit.map { run?.stalls.limit(for: $0) ?? $0 },
+                stallsAfter: stallLimit.map { run?.stalls.limit(for: $0) ?? $0 }
+            )
+            switch await cancellation.result(of: task, within: limits) {
+                case .ended(let ended):
+                    if let took = cancellation.endedAfterCancel {
+                        run?.stalls.record(took)
+                    }
+                    if limits.stallsAfter != nil {
+                        run?.stalls.record(cancellation.heartbeat.longestGap)
+                    }
+                    result = ended
+                case .stillRunning(let after):
+                    run?.stalls.noteStall()
+                    let snapshot = cancellation.snapshot
+                    note(snapshot.description)
+                    throw StillRunning(
+                        limit: after,
+                        cancelledAt: snapshot.cancelledAt ?? 0,
+                        label: snapshot.label,
+                        location: "\(fileID):\(line)"
+                    )
+                case .stalled(let after):
+                    task.cancel()
+                    run?.stalls.noteStall()
+                    note(cancellation.snapshot.description)
+                    throw Stalled(
+                        limit: after,
+                        beats: cancellation.heartbeat.count,
+                        location: "\(fileID):\(line)"
+                    )
             }
-            if let took = cancellation.endedAfterCancel {
-                run?.stalls.record(took)
-            }
-            result = ended
         } else {
             result = await withTaskCancellationHandler {
                 await task.result
@@ -188,6 +231,8 @@ public final class Cancellation: Sendable {
     }
 
     private let state: Mutex<State>
+    /// Beaten by every checkpoint and by `beat()`.
+    let heartbeat = Heartbeat()
 
     init(at: Int?) {
         state = Mutex(State(at: at))
@@ -199,6 +244,7 @@ public final class Cancellation: Sendable {
     /// - Parameter label: What happened at this checkpoint, for the report.
     ///   It is evaluated only for the checkpoint the cancel lands on.
     public func checkpoint(_ label: @autoclosure () -> String? = nil) {
+        heartbeat.beat()
         let cancel = state.withLock { state -> (@Sendable () -> Void)? in
             state.checkpoints += 1
             guard state.checkpoints == state.at else {
@@ -214,6 +260,12 @@ public final class Cancellation: Sendable {
         let label = label()
         state.withLock { $0.label = label }
         cancel()
+    }
+
+    /// Records a step of progress that isn't a cancel point, for the
+    /// `stallsAfter` limit. Every `checkpoint()` is one too.
+    public func beat() {
+        heartbeat.beat()
     }
 
     /// The number of checkpoints so far.
@@ -265,27 +317,51 @@ public final class Cancellation: Sendable {
         }
     }
 
-    /// Waits for `task`'s result, or nil once it is still running `limit`
-    /// after the drawn cancel. Cancelling the waiting task cancels `task`
-    /// and goes on waiting for it.
+    /// The limits a run is watched with.
+    struct Limits {
+        /// How long the body may run after the drawn cancel.
+        var endsWithin: Duration?
+        /// How long the body may go without a beat: before the drawn
+        /// cancel, or for the whole run without `endsWithin`.
+        var stallsAfter: Duration?
+    }
+
+    /// How a watched run went.
+    enum Watched<Value: Sendable>: Sendable {
+        case ended(Result<Value, any Error>)
+        /// Still running this long after the drawn cancel.
+        case stillRunning(Duration)
+        /// No beat for this long.
+        case stalled(Duration)
+    }
+
+    /// Waits for `task`'s result, or stops waiting once the body breaks one
+    /// of `limits`. Cancelling the waiting task cancels `task` and goes on
+    /// waiting for it.
     func result<Value: Sendable>(
         of task: Task<Value, any Error>,
-        endingWithin limit: Duration
-    ) async -> Result<Value, any Error>? {
-        let (endings, delivery) = AsyncStream.makeStream(of: Ending<Value>.self)
+        within limits: Limits
+    ) async -> Watched<Value> {
+        let (endings, delivery) = AsyncStream.makeStream(of: Watched<Value>.self)
         Task.detached {
             delivery.yield(.ended(await task.result))
         }
+        let shortest =
+            [limits.endsWithin, limits.stallsAfter].compactMap { $0 }.min() ?? .seconds(1)
         let watchdog = Task.detached {
-            let poll = min(max(limit / 20, .milliseconds(1)), .milliseconds(10))
-            var watch = StarvationWatch(limit: limit, poll: poll)
+            let poll = min(max(shortest / 20, .milliseconds(1)), .milliseconds(10))
+            var watch = StarvationWatch(limit: shortest, poll: poll)
             while !Task.isCancelled {
                 try? await Task.sleep(for: poll)
                 if watch.wasStarved() {
                     // The body was likely held back too: that time isn't its.
                     self.restartClock()
-                } else if self.isStillRunning(after: limit) {
-                    delivery.yield(.stillRunning)
+                    self.heartbeat.restart()
+                } else if let limit = limits.endsWithin, self.isStillRunning(after: limit) {
+                    delivery.yield(.stillRunning(limit))
+                    return
+                } else if let limit = limits.stallsAfter, self.isStalled(after: limit, limits) {
+                    delivery.yield(.stalled(limit))
                     return
                 }
             }
@@ -301,12 +377,21 @@ public final class Cancellation: Sendable {
             task.cancel()
         }
         watchdog.cancel()
-        switch ending {
-            case .ended(let result)?:
-                return result
-            case .stillRunning?, nil:
-                return nil
+        // The stream only ends early when the waiting task is cancelled,
+        // and then `task` was cancelled and awaited.
+        if let ending {
+            return ending
         }
+        return .ended(await task.result)
+    }
+
+    /// Whether the body, still being watched for stalls, has gone `limit`
+    /// without a beat.
+    private func isStalled(after limit: Duration, _ limits: Limits) -> Bool {
+        let watched = state.withLock { state in
+            !state.ended && (limits.endsWithin == nil || state.cancelledTime == nil)
+        }
+        return watched && heartbeat.sinceLastBeat >= limit
     }
 
     /// Holds the body back until it can be cancelled, so no checkpoint is
@@ -351,11 +436,6 @@ public final class Cancellation: Sendable {
         }
         waiter?.resume()
     }
-}
-
-private enum Ending<Value: Sendable>: Sendable {
-    case ended(Result<Value, any Error>)
-    case stillRunning
 }
 
 /// The failure of a test case whose work kept running after
