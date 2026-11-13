@@ -6,6 +6,8 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
+
+# Local Claude Code state stays out; shared skills are tracked.
 .claude
 
 # libhegel packaged locally by Scripts/package-libhegel.sh. Releases
