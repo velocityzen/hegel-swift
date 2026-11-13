@@ -325,11 +325,10 @@ struct CancellationTests {
     func shrinksFaster() async throws {
         let full: Duration = .seconds(1)
         let stuck = Stuck()
-        let clock = ContinuousClock()
-        var outcome: PropertyOutcome?
-        let elapsed = try await clock.measure {
-            outcome = try await Property.run(settings: isolated) { tc in
-                let n = try tc.draw(.int(in: 0...1000), named: "n")
+        let limits = Mutex<[Duration]>([])
+        let outcome = try await Property.run(settings: isolated) { tc in
+            let n = try tc.draw(.int(in: 0...1000), named: "n")
+            do {
                 _ = try await tc.withRandomCancellation(
                     checkpoints: 1...1,
                     endsWithin: full
@@ -339,13 +338,19 @@ struct CancellationTests {
                         await stuck.wait()
                     }
                 }
+            } catch let stillRunning as StillRunning {
+                limits.withLock { $0.append(stillRunning.limit) }
+                throw stillRunning
             }
         }
-        let counterexample = try #require(outcome?.failure?.counterexamples.first)
+        let counterexample = try #require(outcome.failure?.counterexamples.first)
         #expect(counterexample.drawn.first == "let n = 10")
         #expect((counterexample.error as? StillRunning)?.limit == full)
-        // At the full limit, every failing case would take at least `full`.
-        #expect(stuck.started >= 10)
-        #expect(elapsed < full * stuck.started * 3 / 4)
+        // Checked by the limits the failures had, not by wall-clock time,
+        // which a loaded CI runner stretches.
+        let seen = limits.withLock { $0 }
+        let shortened = seen.filter { $0 < full }
+        #expect(!shortened.isEmpty)
+        #expect(shortened.allSatisfy { $0 >= .milliseconds(100) })
     }
 }
