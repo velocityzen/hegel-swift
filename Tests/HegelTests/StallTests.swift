@@ -138,27 +138,30 @@ struct StallTests {
     func shrinksFaster() async throws {
         let full: Duration = .seconds(1)
         let hangs = Hangs()
-        let clock = ContinuousClock()
-        var outcome: PropertyOutcome?
-        let elapsed = try await clock.measure {
-            outcome = try await Property.run(settings: isolated) { tc in
-                let n = try tc.draw(.int(in: 0...1000), named: "n")
+        let limits = Mutex<[Duration]>([])
+        let outcome = try await Property.run(settings: isolated) { tc in
+            let n = try tc.draw(.int(in: 0...1000), named: "n")
+            do {
                 try await tc.withStallDetection(after: full) { heartbeat in
                     heartbeat.beat()
                     if n >= 10 {
                         await hangs.hang()
                     }
                 }
+            } catch let stalled as Stalled {
+                limits.withLock { $0.append(stalled.limit) }
+                throw stalled
             }
         }
-        let counterexample = try #require(outcome?.failure?.counterexamples.first)
+        let counterexample = try #require(outcome.failure?.counterexamples.first)
         #expect(counterexample.drawn == ["let n = 10"])
         #expect((counterexample.error as? Stalled)?.limit == full)
-        // At the full limit, every stall would take at least `full`. The
-        // first stall and the replays a report is built from still do, but
-        // the shrink candidates between them get a fraction of it.
-        #expect(hangs.started >= 10)
-        #expect(elapsed < full * hangs.started * 3 / 4)
+        // Checked by the limits the stalls had, not by wall-clock time,
+        // which a loaded CI runner stretches.
+        let seen = limits.withLock { $0 }
+        let shortened = seen.filter { $0 < full }
+        #expect(!shortened.isEmpty)
+        #expect(shortened.allSatisfy { $0 >= .milliseconds(100) })
     }
 }
 

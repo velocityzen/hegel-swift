@@ -285,6 +285,37 @@ try await property { tc in
   whether code after the nth checkpoint saw the cancel. Cancelling the caller cancels the body
   too. The body can't draw: draw what it needs first.
 
+The property cancellation tests check most is that cancelled work ends. Pass `endsWithin:` to
+check it, and hand the code under test a `CancellationProbe` as the work it runs, to check that
+nothing it started was left running:
+
+```swift
+try await property { tc in
+    let jobs = try tc.draw(.int(in: 1...8), named: "jobs")
+    let probe = CancellationProbe()
+    _ = try await tc.withRandomCancellation(endsWithin: .seconds(5)) { cancellation in
+        await pool.run(count: jobs) { _ in
+            cancellation.checkpoint()
+            await probe.hang()
+        }
+    }
+    #expect(probe.uncancelled == 0)
+}
+```
+
+- Once the drawn cancel lands, the body has the `endsWithin` limit to end. If it's still running
+  then, its task is abandoned and the call throws `StillRunning`, which says where the cancel
+  landed and shrinks like any failure. Its origin is the call site. A body that was never cancelled
+  may take as long as it needs.
+- As with stall detection, once a case has stayed running, the cases tried while shrinking get a
+  shorter limit, based on how long passing cases took to end after their cancel. Reported cases get
+  the full limit.
+- `probe.hang()` runs until its task is cancelled, for at most a minute (`hang(atMost:)`), and
+  returns whether it was cancelled. `started`, `cancelled` and `uncancelled` count the hangs. A
+  cancel is counted in the hang's cancellation handler, as the cancel is made, not when the hang's
+  task runs again, which can take seconds on a busy machine. So `uncancelled` is right as soon as
+  the cancels have been made, without waiting.
+
 ### Detecting stalls
 
 A lost wakeup or a deadlock makes async code wait forever, and Hegel can't report or shrink a test

@@ -201,6 +201,16 @@ fully applied or fully rolled back; the cancellation was observed by code after 
 draw everything first. A failure shrinks to the earliest checkpoint that still fails, or to no
 cancel at all when the bug doesn't need one.
 
+- **Check that cancelled work ends** with `withRandomCancellation(endsWithin: .seconds(5))`, not a
+  hand-written wait-with-timeout: once the drawn cancel lands, the body has that long to end, or
+  the case fails with `StillRunning` (origin: the call site), which shrinks. Shrink candidates get
+  a shorter limit, as with stalls, so a generous one is cheap.
+- **Check that nothing was left running** with a `CancellationProbe`: hand `probe.hang()` to the
+  code under test as the work it starts (a request that never answers, a job that never finishes),
+  and check `probe.uncancelled == 0` after the run. It counts each cancel in the hang's
+  cancellation handler, as the cancel is made, so the check needs no waiting; counting when the
+  hanging task finishes would wait for it to be scheduled, and flake on a busy machine.
+
 ## Stalls
 
 A hang is how async code usually fails, and a test case that never returns can't be reported or
