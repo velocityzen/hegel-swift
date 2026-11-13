@@ -12,7 +12,7 @@ let xcframeworkChecksum = "78f7a3613b476a2f5b86ef161b5e9e6d4c91cbea0b04800b13ef2
 let artifactbundleChecksum = "a476bdeb02906d2e82ab24b212bcf75f9fa6daba606948b3d4311cb9d950036f"
 
 // libhegel ships as two binary targets: an XCFramework for Apple platforms
-// and a static-library artifact bundle for Linux. Releases of this package
+// and a static-library artifact bundle for Linux and Windows. Releases of this package
 // download them from the `libhegel-<version>` release of this repository.
 // After Scripts/package-libhegel.sh, the local copies in Artifacts/ are used
 // instead, so a checkout can build against a libhegel that is not released
@@ -34,9 +34,9 @@ let swiftSettings: [SwiftSetting] = [
     .enableUpcomingFeature("InferIsolatedConformances"),
 ]
 
-// Only the host's engine is declared, so a Linux build never downloads the
-// XCFramework and a macOS build never downloads the Linux bundle.
-#if os(Linux)
+// Only the host's engine is declared, so a Linux or Windows build never
+// downloads the XCFramework and a macOS build never downloads the bundle.
+#if os(Linux) || os(Windows)
     let engine = libhegelTarget(
         name: "CHegelLinux",
         artifact: "CHegel.artifactbundle",

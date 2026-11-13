@@ -346,14 +346,17 @@ final class RunDriver {
             store(origin: failure.origin, Capture(drawn: tc.readOutput(), error: failure.error))
         }
 
+        // C enums import as UInt32 with Clang's defaults and as Int32 on
+        // Windows, where MSVC makes them `int`.
+        let completionStatus = UInt32(truncatingIfNeeded: status.rawValue)
         let code: hegel_result_t =
             if let origin = failure?.origin {
                 origin.withHegelString { view in
                     var view = view
-                    return hegel_mark_complete(context.raw, tc.raw, status.rawValue, &view)
+                    return hegel_mark_complete(context.raw, tc.raw, completionStatus, &view)
                 }
             } else {
-                hegel_mark_complete(context.raw, tc.raw, status.rawValue, nil)
+                hegel_mark_complete(context.raw, tc.raw, completionStatus, nil)
             }
         if let usageError {
             throw usageError
