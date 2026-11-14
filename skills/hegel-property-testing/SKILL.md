@@ -172,7 +172,8 @@ Before calling the work done — with a fresh-context sub-agent if available —
 - No randomness bypasses `tc.draw`. No range is narrower than the API's contract without a stated
   reason. Configured limits have menus. Policy is drawn per test case where the test has a policy.
   Empty, absent and boundary values are reachable.
-- Every reach claim is an event listed in `property(reaching:)`, observed in a statistics run.
+- Every reach claim is an event listed in `property(reaching:)`, or in `reachingAfter:` for a
+  state only deep runs reach, observed in a statistics run.
 - Checks live at distinct sites; helpers forward `sourceLocation`; bounds are used wherever the
   test can't know the exact outcome; no reach claim is the negation of a check.
 - State machine rules don't `assume` away inputs the system should handle; cheap invariants run

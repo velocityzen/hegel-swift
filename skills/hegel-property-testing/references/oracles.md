@@ -150,6 +150,9 @@ func evictionKeepsMostRecent() throws {
   failure that still fails, or runs only explicit examples.
 - Assert reach only for states your statistics show in a healthy share of cases. A claim on a
   1-in-500 state is flaky under a random seed; make the generator reach it more often instead.
+  If a state is reliable only in deep runs, claim it with `reachingAfter: [1_000: [...]]`: the
+  run judges it only once that many generated cases passed, however the count was set. Never
+  guess a run's depth from `HEGEL_*` variables.
 - `Property.run(reaching:)` does the same without Swift Testing: it throws `HegelError.unreached`.
 
 **A reach claim asserts the precondition, never the violation.** Don't count the bad state that a

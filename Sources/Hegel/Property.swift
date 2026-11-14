@@ -33,6 +33,10 @@ public enum Property {
     ///     `HegelError.unreached`. They show that the property tested the
     ///     states it exists for. A run that fails, replays a blob or doesn't
     ///     generate doesn't judge them.
+    ///   - reachingAfter: Reach claims judged only once at least as many
+    ///     generated cases as their key have passed, for states too rare
+    ///     for a short run: `[1_000: ["boundary"]]` claims `"boundary"` on
+    ///     runs of 1,000 passing cases or more, however that count was set.
     ///   - output: Receives the engine's output, one line at a time, instead
     ///     of standard error: statistics, verbose logs and health check
     ///     messages. It is called on the thread that runs the property.
@@ -45,6 +49,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
+        reachingAfter: [Int: [String]] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws(HegelError) -> PropertyOutcome {
@@ -71,7 +76,7 @@ public enum Property {
             try driver.finish(tc, outcome)
         }
         let outcome = try driver.outcome().adding(explicitFailures)
-        try driver.checkReaching(reaching, outcome)
+        try driver.checkReaching(reaching, after: reachingAfter, outcome)
         return outcome
     }
 
@@ -85,6 +90,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
+        reachingAfter: [Int: [String]] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws(HegelError) -> PropertyOutcome {
@@ -111,7 +117,7 @@ public enum Property {
             try driver.finish(tc, outcome)
         }
         let outcome = try driver.outcome().adding(explicitFailures)
-        try driver.checkReaching(reaching, outcome)
+        try driver.checkReaching(reaching, after: reachingAfter, outcome)
         return outcome
     }
 
@@ -124,6 +130,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
+        reachingAfter: [Int: [String]] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws {
@@ -134,6 +141,7 @@ public enum Property {
             reproducing: blob,
             examples: examples,
             reaching: reaching,
+            reachingAfter: reachingAfter,
             output: output,
             body
         )
@@ -151,6 +159,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
+        reachingAfter: [Int: [String]] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws {
@@ -161,6 +170,7 @@ public enum Property {
             reproducing: blob,
             examples: examples,
             reaching: reaching,
+            reachingAfter: reachingAfter,
             output: output,
             body
         )
@@ -413,7 +423,15 @@ final class RunDriver {
     ///
     /// A run that can't judge them doesn't: one that failed, replays a
     /// reproduce blob, or doesn't generate.
-    func checkReaching(_ labels: [String], _ outcome: PropertyOutcome) throws(HegelError) {
+    ///
+    /// The labels in `after` are judged only when at least their key's
+    /// number of generated cases passed.
+    func checkReaching(
+        _ labels: [String],
+        after gated: [Int: [String]],
+        _ outcome: PropertyOutcome
+    ) throws(HegelError) {
+        let labels = Property.reachClaims(labels, after: gated, passingCases: passingCases)
         guard !labels.isEmpty, outcome.failure == nil, blob == nil,
             settings.phases.contains(.generate)
         else {
@@ -536,5 +554,20 @@ final class OutputSink: Sendable {
         let sink = Unmanaged<OutputSink>.fromOpaque(userData).takeUnretainedValue()
         let bytes = UnsafeRawBufferPointer(start: line, count: line == nil ? 0 : length)
         sink.handler(String(decoding: bytes, as: UTF8.self))
+    }
+}
+
+extension Property {
+    /// The reach claims a run that passed `passingCases` generated cases
+    /// judges: every label in `labels`, then the labels in `gated` whose
+    /// key is at most `passingCases`, in key order, each label once.
+    static func reachClaims(
+        _ labels: [String],
+        after gated: [Int: [String]],
+        passingCases: Int
+    ) -> [String] {
+        var seen = Set<String>()
+        let due = gated.filter { $0.key <= passingCases }.sorted { $0.key < $1.key }
+        return (labels + due.flatMap(\.value)).filter { seen.insert($0).inserted }
     }
 }
