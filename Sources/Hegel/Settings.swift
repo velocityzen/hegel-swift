@@ -16,6 +16,9 @@ import CHegel
 /// The one exception is `testCases`: a `HEGEL_TEST_CASES` environment
 /// variable wins over it, so `HEGEL_TEST_CASES=10000 swift test` runs every
 /// property deeper, including those whose test count is set in Swift.
+/// `HEGEL_TEST_CASES_SCALE=50` multiplies whatever count a property
+/// resolves to instead, so expensive properties stay cheaper than cheap
+/// ones in a deep run.
 public struct Settings: Sendable, Equatable {
     /// The profile to start from instead of the default one: `development`,
     /// `ci`, `workload`, `base`, or one defined in `hegel.toml`.
@@ -24,8 +27,9 @@ public struct Settings: Sendable, Equatable {
     /// considered to hold. Rejected cases do not count.
     ///
     /// This is the property's own count, so it wins over `hegel.toml`
-    /// profiles, but a `HEGEL_TEST_CASES` environment variable, chosen for
-    /// one run, wins over it.
+    /// profiles: a profile's `test_cases` applies only to properties that
+    /// don't set one. A `HEGEL_TEST_CASES` environment variable, chosen for
+    /// one run, wins over it, and `HEGEL_TEST_CASES_SCALE` multiplies it.
     public var testCases: Int?
     /// A fixed seed for generation.
     public var seed: UInt64?
@@ -126,6 +130,36 @@ extension Settings {
         var settings = self
         settings.testCases = nil
         return settings
+    }
+
+    /// The environment variable that multiplies every property's test count.
+    static let testCasesScaleVariable = "HEGEL_TEST_CASES_SCALE"
+
+    /// The test count a run uses once `HEGEL_TEST_CASES_SCALE` in
+    /// `environment` multiplies `resolved`, or `nil` when nothing scales
+    /// it: the variable is unset or empty, or `HEGEL_TEST_CASES` is set and
+    /// wins outright.
+    ///
+    /// The scale is a positive, finite number, so `0.1` makes a quick run
+    /// as well as `50` a deep one. The result rounds up, is at least 1, and
+    /// saturates at `UInt64.max`.
+    static func scaledTestCases(
+        _ resolved: UInt64,
+        environment: [String: String]
+    ) throws(HegelError) -> UInt64? {
+        guard let value = environment[testCasesScaleVariable], !value.isEmpty,
+            (environment[testCasesVariable] ?? "").isEmpty
+        else {
+            return nil
+        }
+        guard let scale = Double(value), scale.isFinite, scale > 0 else {
+            throw .usage(
+                "\(testCasesScaleVariable) must be a positive number, got \"\(value)\""
+            )
+        }
+        let scaled = (Double(resolved) * scale).rounded(.up)
+        guard scaled < Double(UInt64.max) else { return .max }
+        return max(1, UInt64(scaled))
     }
 }
 
@@ -250,14 +284,24 @@ final class EngineSettings {
             throw .engine("libhegel returned no settings handle")
         }
         raw = handle
+        let environment = ProcessInfo.processInfo.environment
         do {
             try apply(
-                settings.yieldingTo(environment: ProcessInfo.processInfo.environment),
+                settings.yieldingTo(environment: environment),
                 databaseKey: databaseKey,
                 location: location
             )
         } catch {
             throw .usage(error.message)
+        }
+        var resolved: UInt64 = 0
+        hegel_settings_get_test_cases(nil, raw, &resolved)
+        if let scaled = try Settings.scaledTestCases(resolved, environment: environment) {
+            do {
+                try context.call { hegel_settings_set_test_cases($0, handle, scaled) }
+            } catch {
+                throw .usage(error.message)
+            }
         }
     }
 
