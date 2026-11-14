@@ -31,4 +31,21 @@ struct HegelReachTests {
         }
         #expect(issues.isEmpty)
     }
+
+    @Test(.capturingIssues, .hegel)
+    func gatedClaimIsAnIssueOnlyWhenDue() throws {
+        let notDue = try capture {
+            try property(reachingAfter: ["huge": .max]) { tc in
+                _ = try tc.draw(.int(in: 0...100), named: "n")
+            }
+        }
+        #expect(notDue.isEmpty)
+        let due = try capture {
+            try property(reachingAfter: ["huge": 1]) { tc in
+                _ = try tc.draw(.int(in: 0...100), named: "n")
+            }
+        }
+        try #require(due.count == 1)
+        #expect(due[0].commentText.contains("\"huge\""))
+    }
 }

@@ -35,11 +35,24 @@ import Synchronization
 /// }
 /// ```
 ///
+/// `reachingAfter` holds claims for states too rare for a short run, each
+/// with the number of passing generated cases a run needs before it judges
+/// it. A deep run claims them however its count was set: a profile, the
+/// test's own count, `HEGEL_TEST_CASES` or `HEGEL_TEST_CASES_SCALE`.
+///
+/// ```swift
+/// try property(
+///     reaching: ["ends inside a body"],
+///     reachingAfter: ["ends on a frame boundary": 1_000]
+/// ) { tc in ... }
+/// ```
+///
 /// An unreached claim is a test issue. A run that fails, replays a blob,
 /// or doesn't generate doesn't judge the claims.
 public func property(
     examples: [Example] = [],
     reaching: [String] = [],
+    reachingAfter: [String: Int] = [:],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) throws -> Void
 ) throws {
@@ -68,6 +81,7 @@ public func property(
             location: scope.location,
             examples: examples,
             reaching: reaching,
+            reachingAfter: reachingAfter,
             output: scope.output,
             { tc in try runner.runCase(tc, nil, body) }
         )
@@ -91,6 +105,7 @@ public func property(
 public func property(
     examples: [Example] = [],
     reaching: [String] = [],
+    reachingAfter: [String: Int] = [:],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) async throws -> Void
 ) async throws {
@@ -120,6 +135,7 @@ public func property(
             location: scope.location,
             examples: examples,
             reaching: reaching,
+            reachingAfter: reachingAfter,
             output: scope.output,
             { tc in try await runner.runCase(tc, nil, body) }
         )
