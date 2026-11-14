@@ -605,8 +605,17 @@ A run starts from the settings the engine resolves, in this order:
 
 Settings given in Swift override that result field by field, with one exception: an explicit
 `HEGEL_TEST_CASES` wins over a `testCases` set in Swift. A test's own count is its default, and
-`HEGEL_TEST_CASES=10000 swift test` runs every property deeper, those with their own count too. A
-`hegel.toml` profile's `test_cases` doesn't, so a test's own count wins over it.
+`HEGEL_TEST_CASES=10000 swift test` runs every property deeper, those with their own count too.
+
+A `hegel.toml` profile's `test_cases` doesn't: a test's own count wins over it, so a profile's
+count applies only to properties without one. In a suite where every property sets its count, a
+`nightly` profile's `test_cases` changes nothing.
+
+`HEGEL_TEST_CASES` flattens every property to one count. To run deeper while keeping the relative
+costs, scale instead: `HEGEL_TEST_CASES_SCALE=50` multiplies the count each property resolves to,
+its own or the profile's, so 200 becomes 10,000 and an expensive state machine's 20 becomes 1,000.
+The scale is any positive number (`0.1` for a quick pass), rounds up, and `HEGEL_TEST_CASES` still
+wins over it. A reproduce blob replays one example either way.
 
 ```swift
 @Test(.hegel(testCases: 500, seed: 42))
@@ -620,7 +629,12 @@ Settings given in Swift override that result field by field, with one exception:
 test_cases = 1_000
 
 [profiles.nightly]
-test_cases = 10_000
+derandomize = false
+```
+
+```bash
+# a scheduled deep run: fresh inputs, every property 50 times deeper
+HEGEL_DEFAULT_PROFILE=nightly HEGEL_TEST_CASES_SCALE=50 swift test
 ```
 
 The engine writes its own output to standard error: verbose logs, statistics from

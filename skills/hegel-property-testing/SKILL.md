@@ -138,22 +138,26 @@ with no mutation in it.
   share it, a singleton, or a static cache across test cases.
 - Keep the body cheap: a passing `repeat` runs until the budget is used, often thousands of
   iterations. Lower `testCases` for an expensive property rather than shrinking its domain;
-  a deep run's `HEGEL_TEST_CASES` still overrides it.
+  a deep run's `HEGEL_TEST_CASES` still overrides it, and `HEGEL_TEST_CASES_SCALE` multiplies it.
 - Keep generated inputs inside the API's trap contract. A `precondition`, `fatalError` or
   force-unwrap reached by a generated input kills the test process: Hegel can't catch it or
   shrink it. Inputs that should produce an error belong in the property; inputs documented to
   trap belong to a separate, non-property test.
 - Use `tc.note(...)` for context that isn't a draw (model state, a debug dump). Use
   `printed(with:)` for values that print badly or are secret.
-- Keep `.hegel/` in `.gitignore`. Commit a `hegel.toml` with a deeper profile for scheduled runs:
+- Keep `.hegel/` in `.gitignore`. Commit a `hegel.toml` with a profile for scheduled runs:
 
   ```toml
   [profiles.nightly]
-  test_cases = 10_000
   derandomize = false
   ```
 
-  Select it with `HEGEL_DEFAULT_PROFILE=nightly swift test`. The shipped `ci` profile is
+  and run it deeper with a scale:
+  `HEGEL_DEFAULT_PROFILE=nightly HEGEL_TEST_CASES_SCALE=50 swift test`. Don't put the depth in
+  the profile: its `test_cases` applies only to properties without their own
+  `.hegel(testCases:)`, so in a suite that sets counts it changes nothing. The scale multiplies
+  each property's resolved count and keeps expensive properties relatively cheap;
+  `HEGEL_TEST_CASES` instead runs every property at one count. The shipped `ci` profile is
   derandomized: CI sees the same inputs every run, so new inputs come only from local and
   scheduled runs.
 
