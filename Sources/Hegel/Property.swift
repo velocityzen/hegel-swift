@@ -33,10 +33,10 @@ public enum Property {
     ///     `HegelError.unreached`. They show that the property tested the
     ///     states it exists for. A run that fails, replays a blob or doesn't
     ///     generate doesn't judge them.
-    ///   - reachingAfter: Reach claims judged only once at least as many
-    ///     generated cases as their key have passed, for states too rare
-    ///     for a short run: `[1_000: ["boundary"]]` claims `"boundary"` on
-    ///     runs of 1,000 passing cases or more, however that count was set.
+    ///   - reachingAfter: Reach claims for states too rare for a short run,
+    ///     each with the number of generated cases that must pass before the
+    ///     run judges it: `["boundary": 1_000]` claims `"boundary"` on runs
+    ///     of 1,000 passing cases or more, however that count was set.
     ///   - output: Receives the engine's output, one line at a time, instead
     ///     of standard error: statistics, verbose logs and health check
     ///     messages. It is called on the thread that runs the property.
@@ -49,7 +49,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
-        reachingAfter: [Int: [String]] = [:],
+        reachingAfter: [String: Int] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws(HegelError) -> PropertyOutcome {
@@ -90,7 +90,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
-        reachingAfter: [Int: [String]] = [:],
+        reachingAfter: [String: Int] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws(HegelError) -> PropertyOutcome {
@@ -130,7 +130,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
-        reachingAfter: [Int: [String]] = [:],
+        reachingAfter: [String: Int] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) throws -> Void
     ) throws {
@@ -159,7 +159,7 @@ public enum Property {
         reproducing blob: String? = nil,
         examples: [Example] = [],
         reaching: [String] = [],
-        reachingAfter: [Int: [String]] = [:],
+        reachingAfter: [String: Int] = [:],
         output: (@Sendable (String) -> Void)? = nil,
         _ body: (TestCase) async throws -> Void
     ) async throws {
@@ -424,11 +424,11 @@ final class RunDriver {
     /// A run that can't judge them doesn't: one that failed, replays a
     /// reproduce blob, or doesn't generate.
     ///
-    /// The labels in `after` are judged only when at least their key's
-    /// number of generated cases passed.
+    /// A label in `after` is judged only when at least its value's number
+    /// of generated cases passed.
     func checkReaching(
         _ labels: [String],
-        after gated: [Int: [String]],
+        after gated: [String: Int],
         _ outcome: PropertyOutcome
     ) throws(HegelError) {
         let labels = Property.reachClaims(labels, after: gated, passingCases: passingCases)
@@ -560,14 +560,17 @@ final class OutputSink: Sendable {
 extension Property {
     /// The reach claims a run that passed `passingCases` generated cases
     /// judges: every label in `labels`, then the labels in `gated` whose
-    /// key is at most `passingCases`, in key order, each label once.
+    /// threshold is at most `passingCases`, ordered by threshold and then
+    /// label, each label once.
     static func reachClaims(
         _ labels: [String],
-        after gated: [Int: [String]],
+        after gated: [String: Int],
         passingCases: Int
     ) -> [String] {
         var seen = Set<String>()
-        let due = gated.filter { $0.key <= passingCases }.sorted { $0.key < $1.key }
-        return (labels + due.flatMap(\.value)).filter { seen.insert($0).inserted }
+        let due = gated.filter { $0.value <= passingCases }
+            .sorted { ($0.value, $0.key) < ($1.value, $1.key) }
+            .map(\.key)
+        return (labels + due).filter { seen.insert($0).inserted }
     }
 }

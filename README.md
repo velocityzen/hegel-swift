@@ -195,13 +195,13 @@ try await property(reaching: ["transforms overlapped"]) { tc in
   a rare state is flaky.
 - `Property.run(reaching:)` throws `HegelError.unreached` instead.
 
-A state too rare for a short run but reliable in a deep one goes in `reachingAfter`, keyed by the
+A state too rare for a short run but reliable in a deep one goes in `reachingAfter`, with the
 number of passing generated cases a run needs before it judges the claim:
 
 ```swift
 try property(
     reaching: ["ends inside a body"],
-    reachingAfter: [1_000: ["ends on a frame boundary"]]
+    reachingAfter: ["ends on a frame boundary": 1_000]
 ) { tc in ... }
 ```
 

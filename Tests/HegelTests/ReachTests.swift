@@ -117,7 +117,7 @@ struct ReachTests {
     func gatedClaimNotDue() throws {
         let outcome = try Property.run(
             settings: isolated.merging(Settings(testCases: 20)),
-            reachingAfter: [.max: ["never"]]
+            reachingAfter: ["never": .max]
         ) { tc in
             _ = try tc.draw(.int(in: 0...100), named: "n")
         }
@@ -130,7 +130,7 @@ struct ReachTests {
             try Property.run(
                 settings: isolated.merging(Settings(testCases: 20)),
                 reaching: ["small"],
-                reachingAfter: [1: ["never"], .max: ["later"]]
+                reachingAfter: ["never": 1, "later": .max]
             ) { tc in
                 let n = try tc.draw(.int(in: 0...100), named: "n")
                 try tc.event("small")
@@ -148,7 +148,7 @@ struct ReachTests {
     func gatedClaimMet() async throws {
         let outcome = try await Property.run(
             settings: isolated.merging(Settings(testCases: 50)),
-            reachingAfter: [10: ["big"]]
+            reachingAfter: ["big": 10]
         ) { tc in
             let n = try tc.draw(.int(in: 0...100), named: "n")
             if n > 50 {

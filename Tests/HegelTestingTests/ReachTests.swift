@@ -35,13 +35,13 @@ struct HegelReachTests {
     @Test(.capturingIssues, .hegel)
     func gatedClaimIsAnIssueOnlyWhenDue() throws {
         let notDue = try capture {
-            try property(reachingAfter: [.max: ["huge"]]) { tc in
+            try property(reachingAfter: ["huge": .max]) { tc in
                 _ = try tc.draw(.int(in: 0...100), named: "n")
             }
         }
         #expect(notDue.isEmpty)
         let due = try capture {
-            try property(reachingAfter: [1: ["huge"]]) { tc in
+            try property(reachingAfter: ["huge": 1]) { tc in
                 _ = try tc.draw(.int(in: 0...100), named: "n")
             }
         }

@@ -35,15 +35,15 @@ import Synchronization
 /// }
 /// ```
 ///
-/// `reachingAfter` holds claims for states too rare for a short run, keyed
-/// by the number of passing generated cases a run needs before it judges
-/// them. A deep run claims them however its count was set: a profile, the
+/// `reachingAfter` holds claims for states too rare for a short run, each
+/// with the number of passing generated cases a run needs before it judges
+/// it. A deep run claims them however its count was set: a profile, the
 /// test's own count, `HEGEL_TEST_CASES` or `HEGEL_TEST_CASES_SCALE`.
 ///
 /// ```swift
 /// try property(
 ///     reaching: ["ends inside a body"],
-///     reachingAfter: [1_000: ["ends on a frame boundary"]]
+///     reachingAfter: ["ends on a frame boundary": 1_000]
 /// ) { tc in ... }
 /// ```
 ///
@@ -52,7 +52,7 @@ import Synchronization
 public func property(
     examples: [Example] = [],
     reaching: [String] = [],
-    reachingAfter: [Int: [String]] = [:],
+    reachingAfter: [String: Int] = [:],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) throws -> Void
 ) throws {
@@ -105,7 +105,7 @@ public func property(
 public func property(
     examples: [Example] = [],
     reaching: [String] = [],
-    reachingAfter: [Int: [String]] = [:],
+    reachingAfter: [String: Int] = [:],
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) async throws -> Void
 ) async throws {
