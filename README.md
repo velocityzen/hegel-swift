@@ -745,8 +745,6 @@ release's checksums.
 - **Traps.** A `fatalError`, failed `precondition` or force-unwrap in the code under test ends the
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
-- **Not yet wrapped:**
-  - Windows
 
 ## Development
 
