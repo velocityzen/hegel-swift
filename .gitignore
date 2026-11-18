@@ -16,3 +16,6 @@ DerivedData/
 
 # Failing examples Hegel stores between runs.
 .hegel/
+
+# Release notes drafted locally for the next release.
+/release.md
