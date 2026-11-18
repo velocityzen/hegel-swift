@@ -23,8 +23,9 @@ public final class TestCase {
     let explicit: ExplicitDraws?
     /// How far an explicit example's lines from this handle are indented.
     private let explicitIndent: String
-    /// Whether this case prints its draws: only the cases a failure report
-    /// can be built from do.
+    /// Whether this case prints its draws and notes: only the cases whose
+    /// output the engine uses do, the ones a verbose run streams and the
+    /// ones a failure report can be built from.
     let printsOutput: Bool
     /// What this case shares with its run: its stall log and the events it
     /// records. Shared by the case's handles; nil for an explicit example.
@@ -150,17 +151,6 @@ public final class TestCase {
         let printer = Printer(raw: handle, context: context)
         rootPrinter = printer
         return printer
-    }
-
-    /// The lines printed for this case: its drawn values and notes.
-    func readOutput() -> [String] {
-        if let explicit {
-            return explicit.lines
-        }
-        guard printsOutput else {
-            return []
-        }
-        return printer.read() ?? []
     }
 
     // MARK: - Drawing

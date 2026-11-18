@@ -6,11 +6,15 @@ import Synchronization
 final class CaseRun: Sendable {
     /// The run's stall log, as this case sees it.
     let stalls: CaseStalls
+    /// Whether the engine uses the full diagnostic of this case if it
+    /// fails, so its completion must carry one.
+    let wantsDetail: Bool
     /// The labels this case recorded with `event`.
     private let eventLabels = Mutex<Set<String>>([])
 
-    init(stalls: CaseStalls) {
+    init(stalls: CaseStalls, wantsDetail: Bool = false) {
         self.stalls = stalls
+        self.wantsDetail = wantsDetail
     }
 
     func recordEvent(_ label: String) {

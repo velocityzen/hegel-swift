@@ -134,12 +134,20 @@ struct StallTests {
         #expect(origins.allSatisfy { $0.hasPrefix("Stalled at HegelTests/StallTests.swift:") })
     }
 
-    @Test("shrinking a stall tries candidates with a shorter limit; the report has the full one")
-    func shrinksFaster() async throws {
+    // At every verbosity only the cases the report can come from get the
+    // full limit, though a verbose run streams every case.
+    @Test(
+        "shrinking a stall tries candidates with a shorter limit; the report has the full one",
+        arguments: [Settings.Verbosity.quiet, .normal, .verbose]
+    )
+    func shrinksFaster(_ verbosity: Settings.Verbosity) async throws {
         let full: Duration = .seconds(1)
         let hangs = Hangs()
         let limits = Mutex<[Duration]>([])
-        let outcome = try await Property.run(settings: isolated) { tc in
+        let outcome = try await Property.run(
+            settings: isolated.merging(Settings(verbosity: verbosity)),
+            output: { _ in }
+        ) { tc in
             let n = try tc.draw(.int(in: 0...1000), named: "n")
             do {
                 try await tc.withStallDetection(after: full) { heartbeat in
@@ -154,7 +162,8 @@ struct StallTests {
             }
         }
         let counterexample = try #require(outcome.failure?.counterexamples.first)
-        #expect(counterexample.drawn == ["let n = 10"])
+        // A quiet run keeps no output for its report.
+        #expect(counterexample.drawn == (verbosity == .quiet ? [] : ["let n = 10"]))
         #expect((counterexample.error as? Stalled)?.limit == full)
         // Checked by the limits the stalls had, not by wall-clock time,
         // which a loaded CI runner stretches.

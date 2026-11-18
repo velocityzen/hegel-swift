@@ -4,9 +4,11 @@ import CHegel
 ///
 /// Each generator prints the values it draws, as it draws them, into the
 /// engine's printer, which fits them to the line: a group prints on one line
-/// when it fits and breaks at every `breakable` when it does not. Printing
-/// only happens on the test cases a report can be built from; elsewhere the
-/// printer is disabled and every call is a no-op.
+/// when it fits and breaks at every `breakable` when it does not. The engine
+/// prints the result as soon as nothing can change it: streamed in a verbose
+/// run, kept for the report of a failure. Printing only happens on the test
+/// cases whose output the engine uses; elsewhere the printer is disabled and
+/// every call is a no-op.
 public final class Printer {
     private let raw: OpaquePointer?
     private let context: EngineContext?
@@ -30,15 +32,16 @@ public final class Printer {
         }
     }
 
-    /// Whether anything printed here can appear in a report.
+    /// Whether anything printed here can appear in the engine's output or a
+    /// report.
     public var isEnabled: Bool { raw != nil }
 
     private func call(_ body: (OpaquePointer, OpaquePointer) -> hegel_result_t) {
         guard let raw, let context else {
             return
         }
-        // Printing is best effort: a region whose document was already read
-        // reports an error that only means the output is no longer wanted.
+        // Printing is best effort: a region whose document is sealed reports
+        // an error that only means the output is no longer wanted.
         _ = body(context.raw, raw)
     }
 
@@ -159,27 +162,5 @@ public final class Printer {
             call { hegel_printer_abort_speculative($0, $1) }
             throw error
         }
-    }
-
-    /// Reads the document. Only valid on a test case's root printer, and
-    /// seals it: later writes are ignored.
-    func read() -> [String]? {
-        guard let raw, let context else {
-            return nil
-        }
-        // Splice in the blocks of state machine steps, which print into
-        // deferred slots. With no slots open this is an error to ignore.
-        _ = hegel_printer_resolve(context.raw, raw)
-        var result = hegel_printer_value_result_t()
-        guard hegel_printer_value(context.raw, raw, &result) == HEGEL_OK else {
-            return ["Failed to render this test case's drawn values: \(context.lastError)"]
-        }
-        defer { hegel_printer_value_result_free(nil, &result) }
-        let text = String(hegelString: hegel_string_t(data: result.data, len: result.len))
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        while lines.last?.isEmpty == true {
-            lines.removeLast()
-        }
-        return lines
     }
 }

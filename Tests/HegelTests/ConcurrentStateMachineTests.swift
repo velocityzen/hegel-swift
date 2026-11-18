@@ -107,8 +107,13 @@ struct Overlap: Error {}
 
 @Suite("Concurrent state machines")
 struct ConcurrentStateMachineTests {
-    @Test("a race between workers is found and reported by round")
-    func findsRace() async throws {
+    // Only the root handle may complete a test case, and a verbose or debug
+    // run needs a failure's summary or detail: the report is the same.
+    @Test(
+        "a race between workers is found and reported by round",
+        arguments: [Settings.Verbosity.normal, .verbose, .debug]
+    )
+    func findsRace(_ verbosity: Settings.Verbosity) async throws {
         let machine = ConcurrentStateMachine<CounterRig>(concurrency: 2...2)
             .rule("increment") { rig, _ in
                 rig.increments.add(1, ordering: .relaxed)
@@ -119,8 +124,9 @@ struct ConcurrentStateMachineTests {
                     throw Failed()
                 }
             }
-        let settings = isolated.merging(Settings(nondeterminism: .quiet))
-        let outcome = try await Property.run(settings: settings) { tc in
+        let settings = isolated.merging(Settings(verbosity: verbosity, nondeterminism: .quiet))
+        let output = OutputLines()
+        let outcome = try await Property.run(settings: settings, output: output.sink) { tc in
             try await machine.run(tc, from: CounterRig())
         }
         let drawn = try #require(outcome.failure).counterexamples[0].drawn
@@ -128,6 +134,9 @@ struct ConcurrentStateMachineTests {
         #expect(drawn.contains { $0.hasPrefix("---------------- Round 1: group \"default\"") })
         #expect(drawn.contains { $0.hasPrefix("[worker 1 ") && $0.hasSuffix("Rule: increment {") })
         #expect(drawn.last == "Invariant no lost updates failed:")
+        // A verbose run streams the machine's rounds as they run.
+        let streamsRounds = output.all.contains { $0.hasPrefix("---------------- Round 1: ") }
+        #expect(streamsRounds == (verbosity != .normal))
     }
 
     @Test("rules that share no group never overlap")
