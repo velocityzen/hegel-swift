@@ -651,8 +651,11 @@ derandomize = false
 HEGEL_DEFAULT_PROFILE=nightly HEGEL_TEST_CASES_SCALE=50 swift test
 ```
 
-The engine writes its own output to standard error: verbose logs, statistics from
-`showStatistics`, health check messages. `output:` sends it somewhere else, one line at a time:
+The engine writes its own output to standard error: statistics from `showStatistics`, health
+check messages and, with `verbosity: .verbose`, each test case's draws and notes as it runs (a
+concurrent state machine round by round), followed by a one-line summary of each failing case.
+`.debug` prints each failing case's full error instead. `output:` sends all of it somewhere
+else, one line at a time, possibly from a concurrent worker's thread:
 
 ```swift
 @Test(.hegel(Settings(showStatistics: true)) { line in logger.info("\(line)") })

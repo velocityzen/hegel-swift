@@ -236,4 +236,29 @@ struct HegelExplicitTests {
         let lines = Self.output.withLock { $0 }
         #expect(lines.contains { $0.contains("* seen: 100") })
     }
+
+    static let verboseOutput = Mutex<[String]>([])
+
+    @Test(
+        .capturingIssues,
+        .hegel(Settings(verbosity: .verbose)) { line in
+            verboseOutput.withLock { $0.append(line) }
+        }
+    )
+    func verboseSummaryLeadsWithTheExpectation() throws {
+        let issues = try capture {
+            try property { tc in
+                let n = try tc.draw(.int(), named: "n")
+                #expect(n < 10)
+            }
+        }
+        #expect(issues.count == 1)
+        let lines = Self.verboseOutput.withLock { $0 }
+        #expect(lines.contains("let n = 10"))
+        #expect(
+            lines.contains {
+                $0.hasPrefix("HegelTestingTests/PropertyTests.swift:") && $0.contains("< 10")
+            }
+        )
+    }
 }

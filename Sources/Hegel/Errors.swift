@@ -71,6 +71,53 @@ func origin(of error: any Error) -> String {
     return "Error: \(String(reflecting: type(of: error)))"
 }
 
+/// Lets an error describe itself in the engine's output better than its type
+/// and message do, for example by saying where in the test it was raised.
+package protocol FailureDiagnostic {
+    /// The failure in one line, led by its location in the test when known.
+    /// Anything after a first newline is cut.
+    var failureSummary: String { get }
+    /// The complete diagnostic, as the error would be shown on its own.
+    var failureDetail: String { get }
+}
+
+/// The one line a verbose run prints after a failing test case: the error's
+/// type and the first line of its message, followed by ` …` when the message
+/// goes on. Never empty and never contains a newline.
+package func failureSummary(of error: any Error) -> String {
+    let text = (error as? any FailureDiagnostic)?.failureSummary ?? failureMessage(of: error)
+    let firstLine = text.prefix { !$0.isNewline }
+    let summary = firstLine.endIndex == text.endIndex ? String(firstLine) : "\(firstLine) …"
+    return summary.isEmpty ? typeName(of: error) : summary
+}
+
+/// The complete diagnostic a debug run prints after a failing test case, and
+/// a failure report keeps: the error's type and its whole message. Never
+/// empty.
+package func failureDetail(of error: any Error) -> String {
+    let detail = (error as? any FailureDiagnostic)?.failureDetail ?? failureMessage(of: error)
+    return detail.isEmpty ? typeName(of: error) : detail
+}
+
+/// The error's type and message, as `Type: message`. A message that starts
+/// with the type's name already, as a struct's default description does, is
+/// left as it is.
+private func failureMessage(of error: any Error) -> String {
+    let type = typeName(of: error)
+    let message = String(describing: error)
+    if message.isEmpty || message == type {
+        return type
+    }
+    if message.hasPrefix(type + "(") || message.hasPrefix(type + ":") {
+        return message
+    }
+    return "\(type): \(message)"
+}
+
+private func typeName(of error: any Error) -> String {
+    String(describing: type(of: error))
+}
+
 /// A property that failed: every distinct counterexample the run found,
 /// each shrunk to a minimal one.
 public struct PropertyFailure: Error, CustomStringConvertible {

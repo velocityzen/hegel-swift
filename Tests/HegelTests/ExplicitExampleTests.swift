@@ -171,22 +171,3 @@ struct ExplicitExampleTests {
         #expect(engineOnly?.contains("make no engine calls") == true)
     }
 }
-
-@Suite("Engine output")
-struct EngineOutputTests {
-    @Test("goes to the output callback, statistics included")
-    func callback() throws {
-        let lines = Mutex<[String]>([])
-        let settings = isolated.merging(Settings(testCases: 20, showStatistics: true))
-        _ = try Property.run(
-            settings: settings,
-            output: { line in lines.withLock { $0.append(line) } }
-        ) {
-            tc in
-            try tc.event(try tc.draw(.bool()) ? "yes" : "no")
-        }
-        let output = lines.withLock { $0 }
-        #expect(output.contains { $0.hasPrefix("Statistics") })
-        #expect(output.contains { $0.contains("* yes: ") })
-    }
-}

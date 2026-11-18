@@ -104,7 +104,10 @@ extension Trait where Self == HegelTrait {
 
     /// Runs the test's properties with Hegel and these settings, sending
     /// the engine's output to `output` one line at a time instead of to
-    /// standard error: statistics, verbose logs and health check messages.
+    /// standard error: statistics, health check messages and, in a verbose
+    /// run, each test case's draws and notes as it runs. `output` can be
+    /// called on any thread that runs a test case, such as a concurrent
+    /// worker's.
     public static func hegel(
         _ settings: Settings = Settings(),
         output: @escaping @Sendable (String) -> Void

@@ -417,7 +417,7 @@ public struct HegelTestFailure: Error, CustomStringConvertible {
 }
 
 /// The failing issues a test case recorded.
-struct RecordedIssues: Error, FailureOrigin, CustomStringConvertible {
+struct RecordedIssues: Error, FailureOrigin, FailureDiagnostic, CustomStringConvertible {
     let issues: [Issue]
 
     var failureOrigin: String {
@@ -429,6 +429,25 @@ struct RecordedIssues: Error, FailureOrigin, CustomStringConvertible {
 
     var description: String {
         issues.map(\.description).joined(separator: "\n")
+    }
+
+    /// Every issue, cut to the first one's first line by the summary: led by
+    /// where it was recorded, as a compiler diagnostic is,
+    /// `Module/File.swift:12:5: Expectation failed: …`.
+    var failureSummary: String {
+        failureDetail
+    }
+
+    /// Every issue, each led by where it was recorded.
+    var failureDetail: String {
+        issues.map(Self.located).joined(separator: "\n")
+    }
+
+    private static func located(_ issue: Issue) -> String {
+        guard let location = issue.sourceLocation else {
+            return issue.description
+        }
+        return "\(location.fileID):\(location.line):\(location.column): \(issue.description)"
     }
 }
 

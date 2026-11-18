@@ -38,8 +38,10 @@ public enum Property {
     ///     run judges it: `["boundary": 1_000]` claims `"boundary"` on runs
     ///     of 1,000 passing cases or more, however that count was set.
     ///   - output: Receives the engine's output, one line at a time, instead
-    ///     of standard error: statistics, verbose logs and health check
-    ///     messages. It is called on the thread that runs the property.
+    ///     of standard error: statistics, health check messages and, in a
+    ///     verbose run, each test case's draws and notes as it runs. It can
+    ///     be called on any thread that runs the property's test case, such
+    ///     as a concurrent worker's, and must not use the test case.
     /// - Throws: `HegelError` when the run ends without a verdict, such as a
     ///   failed health check.
     public static func run(
@@ -216,7 +218,7 @@ public enum Property {
                 return PropertyFailure.Counterexample(
                     origin: origin(of: error),
                     error: error,
-                    drawn: tc.readOutput(),
+                    drawn: explicit.lines,
                     example: explicit.example
                 )
         }
@@ -257,23 +259,20 @@ final class RunDriver {
     private let context = EngineContext()
     let settings: EngineSettings
     private let run: OpaquePointer
-    /// Kept alive for the run, which calls back into it.
+    /// Kept alive for the run, which calls back into it until it is freed.
     private let output: OutputSink?
     private let blob: String?
     private let verbosity: Settings.Verbosity
-    private var captures: [String: Capture] = [:]
+    /// The error each failure's report shows, by origin: the one from the
+    /// latest failing case of that origin whose output the engine used,
+    /// which is the case the engine reports.
+    private var errors: [String: any Error] = [:]
     /// What this run's cases have shown about their stalls.
     private let stallLog = StallLog()
     /// How many passing generated cases recorded each event label.
     private var reached: [String: Int] = [:]
     /// How many generated cases passed.
     private var passingCases = 0
-
-    /// What a failing test case leaves for its report.
-    private struct Capture {
-        var drawn: [String]
-        var error: any Error
-    }
 
     init(
         settings: Settings,
@@ -291,7 +290,9 @@ final class RunDriver {
         verbosity = self.settings.verbosity
         let output = output.map(OutputSink.init)
         self.output = output
-        let callback: hegel_output_callback_t? = output == nil ? nil : OutputSink.callback
+        // Without a handler the engine writes to standard error: a NULL
+        // callback would mean no destination at all.
+        let callback = output == nil ? hegel_output_stderr_callback() : OutputSink.callback
         let userData = output.map { Unmanaged.passUnretained($0).toOpaque() }
         var handle: OpaquePointer?
         let engineSettings = self.settings.raw
@@ -337,20 +338,50 @@ final class RunDriver {
         guard let handle else {
             return nil
         }
-        var stamped = false
-        hegel_test_case_should_capture(nil, handle, &stamped)
-        let printsOutput =
-            switch verbosity {
-                case .quiet: false
-                case .normal: stamped
-                case .verbose, .debug: true
-            }
+        var wantsOutput = false
+        var wantsDetail = false
+        do {
+            try context.call { hegel_test_case_wants_output($0, handle, &wantsOutput) }
+            try context.call { hegel_test_case_wants_detail($0, handle, &wantsDetail) }
+        } catch {
+            hegel_test_case_free(nil, handle)
+            throw .engine(error.message)
+        }
+        let reported = Self.isStamped(
+            verbosity: verbosity,
+            wantsOutput: wantsOutput,
+            wantsDetail: wantsDetail
+        )
         return TestCase(
             raw: handle,
             context: context,
-            printsOutput: printsOutput,
-            run: CaseRun(stalls: CaseStalls(log: stallLog, reported: stamped))
+            printsOutput: wantsOutput,
+            run: CaseRun(
+                stalls: CaseStalls(log: stallLog, reported: reported),
+                wantsDetail: wantsDetail
+            )
         )
+    }
+
+    /// Whether the engine stamped a test case for capture: whether its
+    /// failure can become the report. The engine doesn't expose the stamp,
+    /// but at quiet and normal verbosity a case wants its output only when
+    /// stamped, and at verbose it wants its detail only when stamped. At
+    /// debug every case wants both, so every case counts as stamped.
+    static func isStamped(
+        verbosity: Settings.Verbosity,
+        wantsOutput: Bool,
+        wantsDetail: Bool
+    ) -> Bool {
+        switch verbosity {
+            // A quiet run's stamped cases still want output; a normal run
+            // uses only theirs.
+            case .quiet, .normal: wantsOutput
+            // A verbose run streams every case, but wants the detail of
+            // only the stamped ones.
+            case .verbose: wantsDetail
+            case .debug: true
+        }
     }
 
     func finish(_ tc: TestCase, _ outcome: Result<Void, any Error>) throws(HegelError) {
@@ -378,8 +409,10 @@ final class RunDriver {
                 failure = (origin(of: error), error)
         }
 
-        if let failure {
-            store(origin: failure.origin, Capture(drawn: tc.readOutput(), error: failure.error))
+        // The engine reports the latest failing case of each origin whose
+        // output it used; until one is seen, keep any.
+        if let failure, tc.printsOutput || errors[failure.origin] == nil {
+            errors[failure.origin] = failure.error
         }
         if status == HEGEL_STATUS_VALID, usageError == nil, let run = tc.run {
             run.stalls.commitPassing()
@@ -392,30 +425,32 @@ final class RunDriver {
         // C enums import as UInt32 with Clang's defaults and as Int32 on
         // Windows, where MSVC makes them `int`.
         let completionStatus = UInt32(truncatingIfNeeded: status.rawValue)
-        let code: hegel_result_t =
-            if let origin = failure?.origin {
-                origin.withHegelString { view in
-                    var view = view
-                    return hegel_mark_complete(context.raw, tc.raw, completionStatus, &view)
+        // A failure says what the engine prints of it: a summary when it
+        // uses the case's output, the full detail when it uses that too.
+        let summary = failure.flatMap { tc.printsOutput ? failureSummary(of: $0.error) : nil }
+        let detail = failure.flatMap {
+            tc.run?.wantsDetail == true ? failureDetail(of: $0.error) : nil
+        }
+        let code = withOptionalHegelString(failure?.origin) { origin in
+            withOptionalHegelString(summary) { summary in
+                withOptionalHegelString(detail) { detail in
+                    hegel_mark_complete(
+                        context.raw,
+                        tc.raw,
+                        completionStatus,
+                        origin,
+                        summary,
+                        detail
+                    )
                 }
-            } else {
-                hegel_mark_complete(context.raw, tc.raw, completionStatus, nil)
             }
+        }
         if let usageError {
             throw usageError
         }
         if code != HEGEL_OK {
             throw .engine(context.lastError)
         }
-    }
-
-    /// Keeps the newest capture for an origin unless it has less to show
-    /// than the one already stored.
-    private func store(origin: String, _ capture: Capture) {
-        if let stored = captures[origin], !stored.drawn.isEmpty, capture.drawn.isEmpty {
-            return
-        }
-        captures[origin] = capture
     }
 
     /// Checks a passing run's reach claims: each label in `labels` was
@@ -517,16 +552,46 @@ final class RunDriver {
             hegel_failure_caveat(nil, failure, &caveatPointer)
             let caveat = caveatPointer.map { String(hegelString: $0.pointee) }
 
-            let capture = captures[origin]
+            // What the reported case printed: its draws and notes.
+            var outputPointer: UnsafePointer<hegel_string_t>?
+            hegel_failure_output(nil, failure, &outputPointer)
+            let drawn = outputPointer.map { Self.lines(String(hegelString: $0.pointee)) } ?? []
+
+            var diagnosticPointer: UnsafePointer<hegel_string_t>?
+            hegel_failure_diagnostic(nil, failure, &diagnosticPointer)
+            let diagnostic = diagnosticPointer.map { String(hegelString: $0.pointee) }
+
             return PropertyFailure.Counterexample(
                 origin: origin,
-                error: capture?.error ?? UncapturedFailure(origin: origin),
-                drawn: capture?.drawn ?? [],
+                error: errors[origin] ?? UncapturedFailure(origin: origin, diagnostic: diagnostic),
+                drawn: drawn,
                 caveat: caveat,
                 reproductionBlob: blob,
                 printsReproduction: printBlob
             )
         }
+    }
+
+    /// `text` split into lines, without the empty ones at its end.
+    static func lines(_ text: String) -> [String] {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        while lines.last?.isEmpty == true {
+            lines.removeLast()
+        }
+        return lines
+    }
+}
+
+/// Runs `body` with a view of `text`, or with nil when there is no text.
+private func withOptionalHegelString<R>(
+    _ text: String?,
+    _ body: (UnsafePointer<hegel_string_t>?) -> R
+) -> R {
+    guard let text else {
+        return body(nil)
+    }
+    return text.withHegelString { view in
+        withUnsafePointer(to: view) { body($0) }
     }
 }
 
@@ -534,7 +599,9 @@ final class RunDriver {
 /// fail, such as one replayed from the database by an earlier version.
 struct UncapturedFailure: Error, CustomStringConvertible {
     let origin: String
-    var description: String { origin }
+    /// The diagnostic the engine kept for the failure, if it kept one.
+    var diagnostic: String?
+    var description: String { diagnostic ?? origin }
 }
 
 /// Where a run sends the engine's output lines.
