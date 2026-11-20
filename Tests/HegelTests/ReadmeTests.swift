@@ -1,3 +1,4 @@
+import Foundation
 import Hegel
 import Testing
 
@@ -42,6 +43,65 @@ struct ReadmeTests {
         }
         #expect(outcome.failure != nil)
         #expect(outcome.failure?.report().contains("let n = -9223372036854775808") == true)
+    }
+
+    @Test("zoned datetimes in a named zone")
+    func zonedDateTimes() throws {
+        let meetings = Gen.zonedDateTime(zone: "America/New_York", allowImaginary: false)
+
+        try Property.check(settings: isolated) { tc in
+            let start = try tc.draw(meetings, named: "start")
+            #expect(start.kind != .gap)
+        }
+    }
+
+    @Test(
+        "zoned datetimes from the system database",
+        .enabled(if: FileManager.default.fileExists(atPath: "/usr/share/zoneinfo/Europe/Paris"))
+    )
+    func zoneSource() throws {
+        let parisTZif = try [UInt8](
+            Data(contentsOf: URL(fileURLWithPath: "/usr/share/zoneinfo/Europe/Paris"))
+        )
+
+        let system = try ZoneSource { zones in
+            try zones.addTZif(named: "Europe/Paris", bytes: parisTZif)
+            try zones.addLink(named: "Europe/Monaco", to: "Europe/Paris")
+        }
+        let parisTimes = Gen.zonedDateTime(zones: Zones(source: system))
+
+        try Property.check(settings: isolated) { tc in
+            let value = try tc.draw(parisTimes)
+            #expect(["Europe/Paris", "Europe/Monaco"].contains(value.zone.name))
+            #expect(value.zone.primaryName == "Europe/Paris")
+        }
+    }
+
+    @Test("Foundation dates and zones")
+    func foundationBridges() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.5)
+        let zone = try ZoneSource.bundled.zone(named: "Europe/Paris")
+
+        let instant = Timestamp(date)  // and back: instant.date
+        let utc = instant.utc  // its date and time in UTC
+        let local = LocalDateTime(date, in: .current)  // its wall-clock time in a zone
+        let timeZone = TimeZone(zone)  // nil outside the tz database
+        let fixed = TimeZone(UTCOffset.known(seconds: 3600))  // nil if unknown or past ±18 hours
+
+        #expect(instant.date == date)
+        #expect(utc.description == "2023-11-14T22:13:20.5")
+        #expect(
+            Timestamp(utc: local).seconds - instant.seconds
+                == TimeZone.current.secondsFromGMT(for: date)
+        )
+        #expect(timeZone?.identifier == "Europe/Paris")
+        #expect(fixed?.secondsFromGMT() == 3600)
+
+        let timeZones = Gen.zone().filter { TimeZone($0) != nil }.map { TimeZone($0)! }
+        try Property.check(settings: isolated) { tc in
+            let drawn = try tc.draw(timeZones)
+            #expect(TimeZone(identifier: drawn.identifier) != nil)
+        }
     }
 
     @Test("a state machine over a pool")
