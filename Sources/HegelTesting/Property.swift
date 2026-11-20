@@ -200,11 +200,23 @@ struct PropertyRunner {
         so that Hegel can shrink failures before Swift Testing reports them.
         """
 
-    static func reproduceHint(_ blob: String) -> String {
-        """
-        To reproduce this failure, add this trait to the test:
-            .hegel(reproducing: "\(blob)")
-        """
+    /// How to replay a failure's blob. In a parameterized test the trait
+    /// names the failing test case's arguments, so that only it replays.
+    static func reproduceHint(_ blob: String, arguments: TestCaseArguments?) -> String {
+        guard let arguments else {
+            return """
+                To reproduce this failure, add this trait to the test:
+                    .hegel(reproducing: "\(blob)")
+                """
+        }
+        return """
+            To reproduce this failure, add this trait to the test:
+                .hegel(reproducing: "\(blob)", arguments: \(arguments.label.debugDescription))
+            """
+    }
+
+    func reproduceHint(_ blob: String) -> String {
+        Self.reproduceHint(blob, arguments: scope.arguments)
     }
 
     /// Runs `body` as one test case of the property: the issues it records
@@ -381,7 +393,7 @@ struct PropertyRunner {
             counterexample.example == nil ? "Falsifying example:" : "Falsifying explicit example:"
         ]
         lines.append(contentsOf: counterexample.drawn.map { "    " + $0 })
-        lines.append(contentsOf: counterexample.notes(reproduce: Self.reproduceHint))
+        lines.append(contentsOf: counterexample.notes(reproduce: reproduceHint))
         return Comment(rawValue: lines.joined(separator: "\n"))
     }
 
@@ -391,7 +403,7 @@ struct PropertyRunner {
         _ issues: RecordedIssues,
         _ counterexample: PropertyFailure.Counterexample
     ) {
-        let report = counterexample.report(reproduce: Self.reproduceHint)
+        let report = counterexample.report(reproduce: reproduceHint)
         Issue.record(
             Comment(rawValue: report),
             sourceLocation: issues.issues.first?.sourceLocation ?? sourceLocation
@@ -402,7 +414,10 @@ struct PropertyRunner {
         guard !counterexamples.isEmpty else {
             return
         }
-        throw HegelTestFailure(failure: PropertyFailure(counterexamples: counterexamples))
+        throw HegelTestFailure(
+            failure: PropertyFailure(counterexamples: counterexamples),
+            arguments: scope.arguments
+        )
     }
 }
 
@@ -410,9 +425,11 @@ struct PropertyRunner {
 /// hint.
 public struct HegelTestFailure: Error, CustomStringConvertible {
     public let failure: PropertyFailure
+    /// The failing test case's arguments, in a parameterized test.
+    let arguments: TestCaseArguments?
 
     public var description: String {
-        failure.report(reproduce: PropertyRunner.reproduceHint)
+        failure.report { PropertyRunner.reproduceHint($0, arguments: arguments) }
     }
 }
 

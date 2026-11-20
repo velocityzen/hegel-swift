@@ -27,16 +27,22 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
     public var settings: Settings
     /// A reproduce blob to replay instead of exploring.
     public var reproducing: String?
+    /// The arguments of the one test case of a parameterized test that
+    /// replays `reproducing`, as its failure report named them. Nil replays
+    /// it in every test case.
+    public var reproducingArguments: String?
     /// Receives the engine's output lines instead of standard error.
     public var output: (@Sendable (String) -> Void)?
 
     public init(
         settings: Settings = Settings(),
         reproducing: String? = nil,
+        reproducingArguments: String? = nil,
         output: (@Sendable (String) -> Void)? = nil
     ) {
         self.settings = settings
         self.reproducing = reproducing
+        self.reproducingArguments = reproducingArguments
         self.output = output
     }
 
@@ -53,11 +59,14 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         performing function: @concurrent @Sendable () async throws -> Void
     ) async throws {
         let outer = HegelScope.current
+        let arguments = testCase.flatMap(TestCaseArguments.init)
+        let replaying = reproducing == nil ? outer?.reproducing : blob(for: arguments)
         let scope = HegelScope(
             settings: (outer?.settings ?? Settings()).merging(settings),
-            reproducing: reproducing ?? outer?.reproducing,
+            reproducing: replaying,
             output: output ?? outer?.output,
-            test: test
+            test: test,
+            arguments: arguments
         )
         // Every scope installs the interceptor, so the innermost `.hegel`
         // sees a property's issues before any other issue-handling trait on
@@ -69,6 +78,16 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
                 performing: function
             )
         }
+    }
+
+    /// The blob to replay in the test case with `arguments`: none if the
+    /// trait names other arguments. A test case whose arguments are unknown
+    /// replays it.
+    func blob(for arguments: TestCaseArguments?) -> String? {
+        guard let reproducingArguments, let arguments else {
+            return reproducing
+        }
+        return arguments.label == reproducingArguments ? reproducing : nil
     }
 }
 
@@ -117,8 +136,19 @@ extension Trait where Self == HegelTrait {
 
     /// Replays the failing example a failure report printed, instead of
     /// exploring. Remove it once the failure is fixed.
-    public static func hegel(reproducing blob: String) -> HegelTrait {
-        HegelTrait(reproducing: blob)
+    ///
+    /// In a parameterized test, `arguments` names the test case that failed,
+    /// as its report printed them: only that test case replays the blob,
+    /// and the others explore as usual.
+    ///
+    /// ```swift
+    /// @Test(
+    ///     .hegel(reproducing: "AXicY2VgYGBkZOBiZEBhMAAAAd8AIQ==", arguments: "mode: .fast"),
+    ///     arguments: Mode.allCases
+    /// )
+    /// ```
+    public static func hegel(reproducing blob: String, arguments: String? = nil) -> HegelTrait {
+        HegelTrait(reproducing: blob, reproducingArguments: arguments)
     }
 }
 
@@ -128,11 +158,18 @@ struct HegelScope: Sendable {
     var reproducing: String?
     var output: (@Sendable (String) -> Void)?
     var test: Test
+    /// The running test case's arguments, if the test is parameterized.
+    var arguments: TestCaseArguments?
 
     @TaskLocal static var current: HegelScope?
 
+    /// The test's ID, followed by the test case's argument IDs in a
+    /// parameterized test, so that each test case keeps its own failures.
     var databaseKey: String {
-        test.id.description
+        guard let arguments else {
+            return test.id.description
+        }
+        return "\(test.id.description)/\(arguments.key)"
     }
 
     var location: TestLocation {
