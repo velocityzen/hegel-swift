@@ -200,7 +200,14 @@ extension Gen where Value == CalendarDate {
         Gen(label: .calendarDate) { tc, printer in
             var out = hegel_date_t()
             try tc.call {
-                hegel_generate_date($0, tc.raw, range.lowerBound.raw, range.upperBound.raw, &out)
+                hegel_generate_date(
+                    $0,
+                    tc.raw,
+                    range.lowerBound.raw,
+                    range.upperBound.raw,
+                    nil,
+                    &out
+                )
             }
             let value = CalendarDate(out)
             printer.value(value)
@@ -217,7 +224,14 @@ extension Gen where Value == TimeOfDay {
         Gen(label: .timeOfDay) { tc, printer in
             var out = hegel_time_t()
             try tc.call {
-                hegel_generate_time($0, tc.raw, range.lowerBound.raw, range.upperBound.raw, &out)
+                hegel_generate_time(
+                    $0,
+                    tc.raw,
+                    range.lowerBound.raw,
+                    range.upperBound.raw,
+                    nanosecondPrecision,
+                    &out
+                )
             }
             let value = TimeOfDay(out)
             printer.value(value)
@@ -264,10 +278,21 @@ private func drawDateTime(_ tc: TestCase, _ range: ClosedRange<LocalDateTime>) t
 {
     var out = hegel_datetime_t()
     try tc.call {
-        hegel_generate_datetime($0, tc.raw, range.lowerBound.raw, range.upperBound.raw, &out)
+        hegel_generate_datetime(
+            $0,
+            tc.raw,
+            range.lowerBound.raw,
+            range.upperBound.raw,
+            nanosecondPrecision,
+            &out
+        )
     }
     return LocalDateTime(out)
 }
+
+/// The `precision` argument of the time and datetime draws. A C enum's raw
+/// value is `UInt32` on Darwin and Linux but `Int32` on Windows, so convert.
+private let nanosecondPrecision = UInt32(HEGEL_PRECISION_NANOSECONDS.rawValue)
 
 private func daysIn(month: Int, year: Int) -> Int {
     switch month {
