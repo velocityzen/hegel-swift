@@ -229,7 +229,7 @@ extension Gen where Value == TimeOfDay {
                     tc.raw,
                     range.lowerBound.raw,
                     range.upperBound.raw,
-                    HEGEL_PRECISION_NANOSECONDS.rawValue,
+                    nanosecondPrecision,
                     &out
                 )
             }
@@ -283,12 +283,16 @@ private func drawDateTime(_ tc: TestCase, _ range: ClosedRange<LocalDateTime>) t
             tc.raw,
             range.lowerBound.raw,
             range.upperBound.raw,
-            HEGEL_PRECISION_NANOSECONDS.rawValue,
+            nanosecondPrecision,
             &out
         )
     }
     return LocalDateTime(out)
 }
+
+/// The `precision` argument of the time and datetime draws. A C enum's raw
+/// value is `UInt32` on Darwin and Linux but `Int32` on Windows, so convert.
+private let nanosecondPrecision = UInt32(HEGEL_PRECISION_NANOSECONDS.rawValue)
 
 private func daysIn(month: Int, year: Int) -> Int {
     switch month {
