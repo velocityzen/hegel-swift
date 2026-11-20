@@ -6,6 +6,59 @@ import CHegel
     import Foundation
 #endif
 
+/// The unit the time part of a drawn value is counted in: a time drawn
+/// at `.seconds` has no fraction, and one at `.hours` is on the hour.
+public enum Precision: Hashable, Sendable, CaseIterable {
+    case nanoseconds
+    case microseconds
+    case milliseconds
+    case seconds
+    case minutes
+    case hours
+
+    /// The `hegel_precision_t` argument. A C enum's raw value is `UInt32`
+    /// on Darwin and Linux but `Int32` on Windows, so convert.
+    var raw: UInt32 {
+        let value =
+            switch self {
+                case .nanoseconds: HEGEL_PRECISION_NANOSECONDS
+                case .microseconds: HEGEL_PRECISION_MICROSECONDS
+                case .milliseconds: HEGEL_PRECISION_MILLISECONDS
+                case .seconds: HEGEL_PRECISION_SECONDS
+                case .minutes: HEGEL_PRECISION_MINUTES
+                case .hours: HEGEL_PRECISION_HOURS
+            }
+        return UInt32(value.rawValue)
+    }
+}
+
+/// A day of the week, numbered as ISO 8601 does, from Monday.
+public enum Weekday: Int, Hashable, Sendable, CaseIterable {
+    case monday = 1
+    case tuesday
+    case wednesday
+    case thursday
+    case friday
+    case saturday
+    case sunday
+}
+
+/// A month of the year, numbered from January.
+public enum Month: Int, Hashable, Sendable, CaseIterable {
+    case january = 1
+    case february
+    case march
+    case april
+    case may
+    case june
+    case july
+    case august
+    case september
+    case october
+    case november
+    case december
+}
+
 /// A date in the proleptic Gregorian calendar, with no time zone.
 public struct CalendarDate: Hashable, Comparable, Sendable, CustomStringConvertible {
     public let year: Int
@@ -26,19 +79,32 @@ public struct CalendarDate: Hashable, Comparable, Sendable, CustomStringConverti
         self.day = day
     }
 
-    /// 0001-01-01.
-    public static let min = CalendarDate(year: 1, month: 1, day: 1)
-    /// 9999-12-31.
-    public static let max = CalendarDate(year: 9999, month: 12, day: 31)
+    /// The date `year`-`month`-`day`.
+    public init(year: Int, month: Month, day: Int) {
+        self.init(year: year, month: month.rawValue, day: day)
+    }
+
+    /// -999999-01-01, the first date Hegel draws.
+    public static let min = CalendarDate(year: -999_999, month: 1, day: 1)
+    /// 999999-12-31, the last date Hegel draws.
+    public static let max = CalendarDate(year: 999_999, month: 12, day: 31)
 
     public static func < (lhs: CalendarDate, rhs: CalendarDate) -> Bool {
         (lhs.year, lhs.month, lhs.day) < (rhs.year, rhs.month, rhs.day)
     }
 
-    /// ISO 8601: `2000-01-31`.
+    /// The day of the week the date falls on.
+    public var weekday: Weekday {
+        // 1970-01-01 was a Thursday.
+        let offset = (daysSinceEpoch % 7 + 7 + 3) % 7
+        return Weekday(rawValue: offset + 1)!
+    }
+
+    /// ISO 8601, as every Hegel frontend prints a date: `2000-01-31`, with
+    /// a sign and six digits for a year past 9999 or before 0,
+    /// `+010000-01-01`.
     public var description: String {
-        let year = year < 0 ? "-\(pad(-year, 4))" : pad(year, 4)
-        return "\(year)-\(pad(month, 2))-\(pad(day, 2))"
+        engineText { hegel_format_date(nil, raw, $0) }
     }
 
     init(_ raw: hegel_date_t) {
@@ -106,15 +172,7 @@ public struct TimeOfDay: Hashable, Comparable, Sendable, CustomStringConvertible
     /// ISO 8601: `13:05:00`, with a fraction when there is one,
     /// `13:05:00.25`.
     public var description: String {
-        var text = "\(pad(hour, 2)):\(pad(minute, 2)):\(pad(second, 2))"
-        if nanosecond > 0 {
-            var fraction = pad(nanosecond, 9)
-            while fraction.hasSuffix("0") {
-                fraction.removeLast()
-            }
-            text += ".\(fraction)"
-        }
-        return text
+        engineText { hegel_format_time(nil, raw, $0) }
     }
 
     init(_ raw: hegel_time_t) {
@@ -156,7 +214,9 @@ public struct LocalDateTime: Hashable, Comparable, Sendable, CustomStringConvert
     }
 
     /// ISO 8601: `2000-01-31T13:05:00`.
-    public var description: String { "\(date)T\(time)" }
+    public var description: String {
+        engineText { hegel_format_datetime(nil, raw, $0) }
+    }
 
     init(_ raw: hegel_datetime_t) {
         self.init(date: CalendarDate(raw.date), time: TimeOfDay(raw.time))
@@ -165,39 +225,35 @@ public struct LocalDateTime: Hashable, Comparable, Sendable, CustomStringConvert
     var raw: hegel_datetime_t {
         hegel_datetime_t(date: date.raw, time: time.raw)
     }
-
-    /// The instant this date and time names in UTC.
-    var utcInstant: Date {
-        let seconds = date.daysSinceEpoch * 86_400 + time.secondsSinceMidnight
-        return Date(timeIntervalSince1970: Double(seconds) + Double(time.nanosecond) / 1e9)
-    }
-
-    /// The UTC date and time of `instant`, to the nanosecond `Date` can
-    /// hold.
-    init(utc instant: Date) {
-        let interval = instant.timeIntervalSince1970
-        let seconds = interval.rounded(.down)
-        let nanosecond = Swift.min(Int(((interval - seconds) * 1e9).rounded()), 999_999_999)
-        let (days, secondOfDay) = Int(seconds).quotientAndRemainder(dividingBy: 86_400)
-        let (dayShift, second) = secondOfDay < 0 ? (-1, secondOfDay + 86_400) : (0, secondOfDay)
-        self.init(
-            date: CalendarDate(daysSinceEpoch: days + dayShift),
-            time: TimeOfDay(
-                hour: second / 3600,
-                minute: second / 60 % 60,
-                second: second % 60,
-                nanosecond: nanosecond
-            )
-        )
-    }
 }
 
 extension Gen where Value == CalendarDate {
-    /// Dates in `range`. Shrinks toward 2000-01-01, or the bound nearest it.
-    public static func calendarDate(in range: ClosedRange<CalendarDate> = .min ... .max) -> Gen<
-        CalendarDate
-    > {
-        Gen(label: .calendarDate) { tc, printer in
+    /// Dates in `range` that fall on one of `weekdays` in one of `months`.
+    /// Shrinks toward 2000-01-01, or the bound nearest it, or the nearest
+    /// allowed day to either.
+    ///
+    /// A date outside the weekdays and months is moved to the nearest one
+    /// inside them rather than rejected, so narrowing them costs nothing.
+    public static func calendarDate(
+        in range: ClosedRange<CalendarDate> = .min ... .max,
+        weekdays: Set<Weekday> = Set(Weekday.allCases),
+        months: Set<Month> = Set(Month.allCases)
+    ) -> Gen<CalendarDate> {
+        let options = dateOptions(weekdays: weekdays, months: months)
+        let failure =
+            options.failure
+            ?? engineCheck {
+                hegel_validate_date(
+                    $0,
+                    range.lowerBound.raw,
+                    range.upperBound.raw,
+                    options.object?.raw
+                )
+            }
+        return Gen(label: .calendarDate) { tc, printer in
+            if let failure {
+                throw HegelError.usage(failure)
+            }
             var out = hegel_date_t()
             try tc.call {
                 hegel_generate_date(
@@ -205,7 +261,7 @@ extension Gen where Value == CalendarDate {
                     tc.raw,
                     range.lowerBound.raw,
                     range.upperBound.raw,
-                    nil,
+                    options.object?.raw,
                     &out
                 )
             }
@@ -216,23 +272,44 @@ extension Gen where Value == CalendarDate {
     }
 }
 
+/// Date options for `weekdays` and `months`: none when they allow every
+/// day, so the draw takes its fast path, or the engine's reason for
+/// rejecting them.
+private func dateOptions(weekdays: Set<Weekday>, months: Set<Month>) -> (
+    object: EngineObject?, failure: String?
+) {
+    if weekdays.count == Weekday.allCases.count, months.count == Month.allCases.count {
+        return (nil, nil)
+    }
+    let weekdayMask = weekdays.reduce(UInt32(0)) { $0 | 1 << UInt32($1.rawValue - 1) }
+    let monthMask = months.reduce(UInt32(0)) { $0 | 1 << UInt32($1.rawValue - 1) }
+    let object = EngineObject(
+        make: { hegel_date_options_new($0, $1) },
+        free: { _ = hegel_date_options_free(nil, $0) },
+        configure: { context, options throws(EngineError) in
+            try context.call { hegel_date_options_set_weekdays($0, options, weekdayMask) }
+            try context.call { hegel_date_options_set_months($0, options, monthMask) }
+        }
+    )
+    return (object.failure == nil ? object : nil, object.failure)
+}
+
 extension Gen where Value == TimeOfDay {
-    /// Times of day in `range`. Shrinks toward its lower bound.
-    public static func timeOfDay(in range: ClosedRange<TimeOfDay> = .midnight ... .max) -> Gen<
-        TimeOfDay
-    > {
-        Gen(label: .timeOfDay) { tc, printer in
-            var out = hegel_time_t()
-            try tc.call {
-                hegel_generate_time(
-                    $0,
-                    tc.raw,
-                    range.lowerBound.raw,
-                    range.upperBound.raw,
-                    nanosecondPrecision,
-                    &out
-                )
+    /// Times of day in `range`, each a whole number of `precision` units.
+    /// Shrinks toward its lower bound.
+    public static func timeOfDay(
+        in range: ClosedRange<TimeOfDay> = .midnight ... .max,
+        precision: Precision = .nanoseconds
+    ) -> Gen<TimeOfDay> {
+        let lower = range.lowerBound.raw
+        let upper = range.upperBound.raw
+        let failure = engineCheck { hegel_validate_time($0, lower, upper, precision.raw) }
+        return Gen(label: .timeOfDay) { tc, printer in
+            if let failure {
+                throw HegelError.usage(failure)
             }
+            var out = hegel_time_t()
+            try tc.call { hegel_generate_time($0, tc.raw, lower, upper, precision.raw, &out) }
             let value = TimeOfDay(out)
             printer.value(value)
             return value
@@ -241,13 +318,24 @@ extension Gen where Value == TimeOfDay {
 }
 
 extension Gen where Value == LocalDateTime {
-    /// Dates and times in `range`. Shrinks toward 2000-01-01T00:00:00, or the
-    /// bound nearest it.
+    /// Dates and times in `range`, the time a whole number of `precision`
+    /// units. Shrinks toward 2000-01-01T00:00:00, or the bound nearest it.
     public static func localDateTime(
-        in range: ClosedRange<LocalDateTime> = .min ... .max
+        in range: ClosedRange<LocalDateTime> = .min ... .max,
+        precision: Precision = .nanoseconds
     ) -> Gen<LocalDateTime> {
-        Gen(label: .localDateTime) { tc, printer in
-            let value = try drawDateTime(tc, range)
+        let lower = range.lowerBound.raw
+        let upper = range.upperBound.raw
+        let failure = engineCheck { hegel_validate_datetime($0, lower, upper, precision.raw) }
+        return Gen(label: .localDateTime) { tc, printer in
+            if let failure {
+                throw HegelError.usage(failure)
+            }
+            var out = hegel_datetime_t()
+            try tc.call {
+                hegel_generate_datetime($0, tc.raw, lower, upper, precision.raw, &out)
+            }
+            let value = LocalDateTime(out)
             printer.value(value)
             return value
         }
@@ -255,44 +343,59 @@ extension Gen where Value == LocalDateTime {
 }
 
 extension Gen where Value == Date {
-    /// Instants in `range`, from year 1 to 9999 by default. Shrinks toward
-    /// 2000-01-01T00:00:00Z, or the bound nearest it.
-    public static func date(in range: ClosedRange<Date>? = nil) -> Gen<Date> {
-        let bounds =
-            range.map { LocalDateTime(utc: $0.lowerBound)...LocalDateTime(utc: $0.upperBound) }
-            ?? LocalDateTime.min...LocalDateTime.max
+    /// Instants in `range`, from year 1 to 9999 by default, each a whole
+    /// number of `precision` units since the Unix epoch, to the nearest
+    /// value a `Date` holds. Shrinks toward 2000-01-01T00:00:00Z, or the
+    /// bound nearest it.
+    public static func date(
+        in range: ClosedRange<Date>? = nil,
+        precision: Precision = .nanoseconds
+    ) -> Gen<Date> {
+        let dates = range ?? foundationDates
+        let bounds = Timestamp(dates.lowerBound)...Timestamp(dates.upperBound)
+        let failure = engineCheck {
+            hegel_validate_timestamp(
+                $0,
+                bounds.lowerBound.raw,
+                bounds.upperBound.raw,
+                precision.raw
+            )
+        }
         return Gen(label: .date) { tc, printer in
-            var value = try drawDateTime(tc, bounds).utcInstant
-            // Converting the bounds rounds to the nanosecond.
-            if let range {
-                value = Swift.min(Swift.max(value, range.lowerBound), range.upperBound)
+            if let failure {
+                throw HegelError.usage(failure)
             }
+            // A `Date` rounds to its precision, which may cross a bound.
+            let drawn = try drawTimestamp(tc, bounds, precision).date
+            let value = Swift.min(Swift.max(drawn, dates.lowerBound), dates.upperBound)
             printer.value(value)
             return value
         }
     }
 }
 
-private func drawDateTime(_ tc: TestCase, _ range: ClosedRange<LocalDateTime>) throws
-    -> LocalDateTime
+/// 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999Z, the default range of
+/// `Gen.date()`: a `Date` closer to year 10000 than a millisecond rounds
+/// into it.
+private let foundationDates =
+    Date(timeIntervalSince1970: -62_135_596_800)...Date(timeIntervalSince1970: 253_402_300_799.999)
+
+func drawTimestamp(_ tc: TestCase, _ range: ClosedRange<Timestamp>, _ precision: Precision)
+    throws -> Timestamp
 {
-    var out = hegel_datetime_t()
+    var out = hegel_timestamp_t()
     try tc.call {
-        hegel_generate_datetime(
+        hegel_generate_timestamp(
             $0,
             tc.raw,
             range.lowerBound.raw,
             range.upperBound.raw,
-            nanosecondPrecision,
+            precision.raw,
             &out
         )
     }
-    return LocalDateTime(out)
+    return Timestamp(out)
 }
-
-/// The `precision` argument of the time and datetime draws. A C enum's raw
-/// value is `UInt32` on Darwin and Linux but `Int32` on Windows, so convert.
-private let nanosecondPrecision = UInt32(HEGEL_PRECISION_NANOSECONDS.rawValue)
 
 private func daysIn(month: Int, year: Int) -> Int {
     switch month {
@@ -305,10 +408,4 @@ private func daysIn(month: Int, year: Int) -> Int {
         default:
             return 31
     }
-}
-
-/// `value` in decimal, zero-padded to `width` digits.
-func pad(_ value: Int, _ width: Int) -> String {
-    let digits = String(value)
-    return String(repeating: "0", count: Swift.max(0, width - digits.count)) + digits
 }

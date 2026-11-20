@@ -375,7 +375,9 @@ and give a type as many generators as you need.
 | Floating point | `.double(in:allowNaN:allowInfinity:)`, `.float(in:...)` |
 | Text | `.string(of: Alphabet, count:)`, `.character(of:)`, `.matching(regex)`, `.email`, `.url`, `.domain(maxLength:)` |
 | Grammars | `.grammar(lark, start:imports:terminals:alphabet:maxSize:maxDepth:)` |
-| Dates and times | `.calendarDate(in:)`, `.timeOfDay(in:)`, `.localDateTime(in:)`, `.date(in:)` (Foundation `Date`, UTC) |
+| Dates and times | `.calendarDate(in:weekdays:months:)`, `.timeOfDay(in:precision:)`, `.localDateTime(in:precision:)`, `.date(in:precision:)` (Foundation `Date`, UTC) |
+| Instants and spans | `.timestamp(in:precision:)`, `.utcOffset(in:granularity:allowUnknown:)`, `.duration(in:precision:)` (Swift `Duration`), `.calendarSpan(_:sign:)` |
+| Time zones | `.zone(from:)`, `.zonedDateTime(zones:in:precision:allowImaginary:ambiguous:)`, `.zonedDateTime(zone:source:...)` |
 | Identifiers | `.uuid(version:)`, `.ipv4`, `.ipv6` |
 | Bytes | `.bytes(count:)` |
 | Collections | `.array(of:count:)`, `.set(of:count:)`, `.dictionary(keys:values:count:)` |
@@ -426,9 +428,20 @@ let arithmetic = Gen.grammar(#"""
   you want to override.
 
 The standard library has no calendar types, so dates and times come as plain values:
-`CalendarDate`, `TimeOfDay` and `LocalDateTime`, which have no time zone and print in ISO 8601.
-`.date(in:)` draws a Foundation `Date` through UTC. IP addresses come as `IPv4Address` and
-`IPv6Address`; each has its network-order `bytes` and prints in its standard text form.
+`CalendarDate`, `TimeOfDay`, `LocalDateTime`, `Timestamp`, `UTCOffset`, `CalendarSpan` and
+`ZonedDateTime`. They print as every Hegel frontend prints them, in ISO 8601, RFC 3339 and
+RFC 9557. Durations come as Swift's `Duration`, and `.date(in:)` draws a Foundation `Date`
+through UTC; [Foundation dates and zones](#foundation-dates-and-zones) covers the rest of the
+bridge.
+
+- Dates and instants span years ±999,999; `.date(in:)` keeps to years 1 to 9999.
+- `precision:` makes the time part a whole number of units: `.seconds` draws no fraction, and
+  `.hours` draws on the hour.
+- One draw in twenty aims at a value that breaks code: a bound, a leap day, the Unix epoch, the
+  32-bit limits, or a transition of a time zone.
+
+IP addresses come as `IPv4Address` and `IPv6Address`; each has its network-order `bytes` and
+prints in its standard text form.
 
 Recursive values, such as trees and expressions, come from `recursive`. You give it a leaf
 generator and a function from a generator of sub-values to one level of structure. The engine
@@ -455,6 +468,63 @@ Values print in the report as Swift renders them (`String(describing:)`, with st
 To print something else, such as hiding a secret, use `printed(with:)`. A generator built
 directly with `Gen(label:draw:)` prints through the `Printer` it is given: `text`, `group`,
 `breakable`, `reflow`, `value`, `speculate`.
+
+### Time zones
+
+`.zonedDateTime` draws a zone, a wall-clock time in it and, when the clocks repeated that time,
+which of the two instants it means. Draws aim at the zone's transitions, so skipped and repeated
+wall times turn up in a short run:
+
+```swift
+let meetings = Gen.zonedDateTime(zone: "America/New_York", allowImaginary: false)
+
+try Property.check { tc in
+    let start = try tc.draw(meetings, named: "start")
+    #expect(start.kind != .gap)
+}
+```
+
+Build your own value from `civil`, `zone.name` and `fold`, or for a gap from `timestamp`, and not
+from the offsets. A newer database on your side then changes what a value means but never makes
+it invalid.
+
+Zones come from a `ZoneSource`: the IANA database bundled in libhegel (`tzdbVersion`) unless
+`ZoneSource.setDefault(_:)` replaced it. To draw against another database, fill a source with
+TZif files, zone data given as fields, an offset oracle, or a loader that supplies each name the
+first time a draw needs it:
+
+```swift
+let system = try ZoneSource { zones in
+    try zones.addTZif(named: "Europe/Paris", bytes: parisTZif)
+    try zones.addLink(named: "Europe/Monaco", to: "Europe/Paris")
+}
+let parisTimes = Gen.zonedDateTime(zones: Zones(source: system))
+```
+
+A source also answers queries outside a test: `resolve(_:in:)`, `offset(in:at:)`,
+`info(for:)` and `names`.
+
+### Foundation dates and zones
+
+Hegel's values meet Foundation's at the instant. No conversion goes through a `Calendar`, whose
+Gregorian calendar turns Julian before 1582 and has no year 0:
+
+```swift
+let instant = Timestamp(date)                         // and back: instant.date
+let utc = instant.utc                                 // its date and time in UTC
+let local = LocalDateTime(date, in: .current)         // its wall-clock time in a zone
+let timeZone = TimeZone(zone)                         // nil outside the tz database
+let fixed = TimeZone(UTCOffset.known(seconds: 3600))  // nil if unknown or past ±18 hours
+```
+
+A `Date` holds an instant to within a microsecond or so near the present, and less finely far
+from it. `TimeZone(zone)` keeps the zone's name and takes Foundation's rules for it, which can
+differ from the zone source's for a zone whose rules changed lately. To hand drawn zones to code
+that takes a `TimeZone`:
+
+```swift
+let timeZones = Gen.zone().filter { TimeZone($0) != nil }.map { TimeZone($0)! }
+```
 
 ## Stateful testing
 
