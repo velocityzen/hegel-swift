@@ -1,0 +1,4 @@
+module CHegel {
+    header "hegel.h"
+    export *
+}

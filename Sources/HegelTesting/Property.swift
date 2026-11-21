@@ -56,6 +56,7 @@ public func property(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) throws -> Void
 ) throws {
+    try skipWithoutEngine(sourceLocation)
     guard let scope = HegelScope.current else {
         Issue.record(PropertyRunner.missingTrait, sourceLocation: sourceLocation)
         return
@@ -109,6 +110,7 @@ public func property(
     sourceLocation: SourceLocation = #_sourceLocation,
     _ body: (TestCase) async throws -> Void
 ) async throws {
+    try skipWithoutEngine(sourceLocation)
     guard let scope = HegelScope.current else {
         Issue.record(PropertyRunner.missingTrait, sourceLocation: sourceLocation)
         return

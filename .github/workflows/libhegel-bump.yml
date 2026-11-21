@@ -154,6 +154,7 @@ jobs:
         run: |
           curl -fsSL -o libhegel/hegel.h \
             "https://github.com/hegeldev/hegel/releases/download/libhegel/$VERSION/hegel.h"
+          Scripts/generate-engine-stub.sh
           Scripts/bump-libhegel.sh --apply Artifacts/checksums.env
           rm -rf Artifacts
 
@@ -165,7 +166,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add LIBHEGEL_VERSION Package.swift libhegel/hegel.h Sources/Hegel/Engine/EngineVersion.swift
+          git add LIBHEGEL_VERSION Package.swift libhegel Sources/Hegel/Engine/EngineVersion.swift
           if git diff --cached --quiet; then
             echo "Nothing to change"
             exit 0

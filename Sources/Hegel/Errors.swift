@@ -15,6 +15,9 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
     case engine(String)
     /// The linked libhegel is not the version this package was built for.
     case versionMismatch(expected: String, actual: String)
+    /// libhegel isn't built for the platform this runs on, so properties
+    /// can't run there. See `isEngineAvailable`.
+    case engineUnavailable(platform: String)
     /// A reproduce blob replayed without failing.
     case notReproduced(blob: String)
     /// The property passed, but no passing test case recorded these reach
@@ -37,6 +40,11 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
                 "Hegel engine error: \(message)"
             case .versionMismatch(let expected, let actual):
                 "hegel-swift was built for libhegel \(expected), but \(actual) is linked"
+            case .engineUnavailable(let platform):
+                """
+                Hegel's engine isn't available on \(platform), so the property didn't run. \
+                libhegel is built for macOS on Apple silicon, Linux and Windows.
+                """
             case .notReproduced:
                 """
                 The reproduce blob did not reproduce a failure. The failure may \

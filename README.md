@@ -47,6 +47,7 @@ Expectation failed: mySort(xs) == xs.sorted()
 - [Without Swift Testing](#without-swift-testing)
 - [How it works](#how-it-works)
 - [Following libhegel releases](#following-libhegel-releases)
+- [Platforms without the engine](#platforms-without-the-engine)
 - [Limitations and roadmap](#limitations-and-roadmap)
 - [Development](#development)
 
@@ -55,7 +56,9 @@ Expectation failed: mySort(xs) == xs.sorted()
 Requirements:
 
 - Swift 6.3 or later
-- macOS 26 or later on Apple silicon, Linux (x86_64 or arm64), or Windows (x86_64 or arm64)
+- To run properties: macOS 26 or later on Apple silicon, Linux (x86_64 or arm64), or Windows
+  (x86_64 or arm64). On iOS, tvOS, watchOS, visionOS and Mac Catalyst the package builds, but
+  properties skip their tests: see [Platforms without the engine](#platforms-without-the-engine).
 
 Add the package to `Package.swift`, and its products to your **test** targets only:
 
@@ -76,7 +79,12 @@ targets: [
 
 SwiftPM resolves dependencies per target, so packages that depend on your library never fetch
 hegel-swift. The engine comes as a prebuilt static library that SwiftPM downloads; there is
-nothing else to install.
+nothing else to install. SwiftPM downloads both of hegel-swift's engine archives, whatever it builds
+for: the XCFramework for macOS (9 MB) and the bundle for Linux and Windows (35 MB). Each is linked
+only for the platforms it is built for, chosen by the build's target rather than its host.
+
+A test target that uses HegelTesting needs no platform condition and no `#if` around its property
+files: it builds wherever the package does.
 
 Add `.hegel/` to your `.gitignore`. Hegel stores failing examples there and replays them first
 on the next run.
@@ -798,37 +806,65 @@ the Hegel team keeps for every language:
 ## Following libhegel releases
 
 The libhegel version is pinned in [`LIBHEGEL_VERSION`](LIBHEGEL_VERSION), and the header it ships
-is checked in at [`libhegel/hegel.h`](libhegel/hegel.h).
+is checked in at [`libhegel/hegel.h`](libhegel/hegel.h), next to the engine stub generated from it
+(see [Platforms without the engine](#platforms-without-the-engine)).
 
 - **[`Scripts/package-libhegel.sh`](Scripts/package-libhegel.sh)** downloads a libhegel release
-  and checks every file against upstream's `.sha256`. It repackages the library as
+  and checks every file against upstream's `.sha256`. It copies the header into `libhegel/` and
+  regenerates the stub from it with
+  [`Scripts/generate-engine-stub.sh`](Scripts/generate-engine-stub.sh). It repackages the library as
   `Artifacts/CHegel.xcframework` for macOS and `Artifacts/CHegel.artifactbundle` for Linux and
-  Windows, a static-library bundle. While `Artifacts/` exists, `Package.swift` builds against it. Without
-  it, `Package.swift` downloads the zips from this repository's `libhegel-<version>` release,
-  checked against the checksums in `Package.swift`.
+  Windows, a static-library bundle. While `Artifacts/` exists, `Package.swift` builds against
+  what it holds: a Linux or Windows host packages only the bundle. Without it, `Package.swift`
+  downloads the zips from this repository's `libhegel-<version>` release, checked against the
+  checksums in `Package.swift`.
 - **The [libhegel bump](.github/workflows/libhegel-bump.yml) workflow** runs daily. When
   `hegeldev/hegel` publishes a newer `libhegel/<version>`, it:
   1. packages that version;
   2. runs the tests on macOS and on Linux (amd64 and arm64);
   3. publishes the zips as the `libhegel-<version>` release;
-  4. opens a PR that moves `Package.swift`, `LIBHEGEL_VERSION` and `libhegel/hegel.h`.
+  4. opens a PR that moves `Package.swift`, `LIBHEGEL_VERSION` and `libhegel/` (the header and
+     the stub generated from it).
 
   The `hegel.h` diff in that PR is the engine's ABI change to review. Add a `BUMP_TOKEN` secret
   (a token that can write contents and pull requests) for CI to run on those PRs as well.
 - **[CI](.github/workflows/ci.yml)** lints, then tests on macOS, on Linux (Swift 6.3 and 6.4,
-  amd64 and arm64) and on Windows (amd64 and arm64) against the pinned version. On `main`, it also checks that the released
-  binaries resolve.
+  amd64 and arm64) and on Windows (amd64 and arm64) against the pinned version. It builds and
+  links the tests for the iOS, tvOS, watchOS and visionOS simulators, and checks that the stub
+  matches the header. On `main`, it also checks that the released binaries resolve.
 
 **First setup.** The release assets don't exist until the bump workflow publishes them. Run it
 once by hand with the version `0.51.1`. It publishes `libhegel-0.51.1` and opens a PR with the
 release's checksums.
 
+## Platforms without the engine
+
+Upstream publishes libhegel for macOS on Apple silicon, Linux and Windows, so properties run only
+there. On iOS, tvOS, watchOS, visionOS and Mac Catalyst, devices and simulators alike, Hegel
+links a stub instead: a C target, [`libhegel/`](libhegel), with libhegel's header and functions
+that all fail. A test target that uses HegelTesting builds and links there unchanged:
+
+- `property` skips its test, which Swift Testing reports with the reason: "Hegel's engine isn't
+  available on iOS, so the property didn't run."
+- `Property.run` and `Property.check` throw `HegelError.engineUnavailable(platform:)`.
+- `isEngineAvailable` tells which kind of build is running, for example for
+  `.enabled(if: isEngineAvailable)` on a test that needs the engine outside a property.
+
+`property` skips by throwing Swift Testing's cancellation error. Let it propagate:
+`#expect(throws:)` around a `property` call would catch it and fail.
+
+The stub's functions that return a `hegel_result_t` are generated from `hegel.h` by
+[`Scripts/generate-engine-stub.sh`](Scripts/generate-engine-stub.sh) (`libhegel/stub-generated.c`);
+the few that return something else are in [`libhegel/stub.c`](libhegel/stub.c).
+
 ## Limitations and roadmap
 
-- **Platforms.** upstream publishes libhegel for macOS on Apple silicon, Linux and Windows. There
-  are no iOS, tvOS, watchOS or visionOS slices yet, so property tests run on macOS, Linux and Windows only.
-  iOS simulator slices can be built from the Rust sources and added to the XCFramework; the other
-  Apple platforms need nightly Rust.
+- **Platforms.** Properties run on macOS on Apple silicon, Linux and Windows, and skip elsewhere
+  (see [Platforms without the engine](#platforms-without-the-engine)). Intel Macs, including
+  x86_64 under Rosetta, fail to link: the XCFramework has no x86_64 slice, because upstream
+  doesn't publish one. Stable Rust has targets for x86_64 macOS and for the arm64 devices and
+  simulators of every Apple platform, so real slices for them can be built from libhegel's
+  sources and added to the XCFramework.
 - **Traps.** A `fatalError`, failed `precondition` or force-unwrap in the code under test ends the
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
