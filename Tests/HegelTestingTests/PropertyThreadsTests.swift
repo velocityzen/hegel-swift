@@ -163,12 +163,20 @@ struct PropertyThreadsTests {
 /// pool.
 @Suite("synchronous properties and the cooperative pool")
 struct CooperativePoolTests {
+    /// What the gated properties saw, shared with the tasks that run them.
+    final class Counts: Sendable {
+        /// Properties holding their thread.
+        let holding = Atomic(0)
+        /// Properties that ran on a thread that isn't Hegel's.
+        let offThreads = Atomic(0)
+        /// Properties that gave up waiting to be released.
+        let starved = Atomic(0)
+    }
+
     @Test func synchronousPropertiesLeaveTheCooperativePoolFree() async throws {
         let test = try #require(Test.current)
         let width = PropertyThreads.shared.width
-        let holding = Atomic(0)
-        let offThreads = Atomic(0)
-        let starved = Atomic(0)
+        let counts = Counts()
         let release = DispatchSemaphore(value: 0)
         // A property waits as long as the others take to start, which other
         // tests' properties on Hegel's threads can make slow.
@@ -184,13 +192,13 @@ struct CooperativePoolTests {
                         try property { tc in
                             _ = try tc.draw(.int(), named: "n")
                             if !PropertyThreads.shared.ownsCurrentThread {
-                                offThreads.add(1, ordering: .relaxed)
+                                counts.offThreads.add(1, ordering: .relaxed)
                             }
-                            holding.add(1, ordering: .relaxed)
+                            counts.holding.add(1, ordering: .relaxed)
                             // Holds its thread until this task has seen every
                             // property hold one.
                             if release.wait(timeout: .now() + .seconds(60)) == .timedOut {
-                                starved.add(1, ordering: .relaxed)
+                                counts.starved.add(1, ordering: .relaxed)
                             }
                         }
                     }
@@ -199,7 +207,7 @@ struct CooperativePoolTests {
             // The properties hold `width` threads: on the cooperative pool,
             // every thread it has, and this task couldn't run until they
             // gave up.
-            while holding.load(ordering: .relaxed) < width {
+            while counts.holding.load(ordering: .relaxed) < width {
                 try await Task.sleep(for: .milliseconds(10))
             }
             // An async property runs meanwhile.
@@ -218,9 +226,9 @@ struct CooperativePoolTests {
             }
             try await group.waitForAll()
         }
-        #expect(offThreads.load(ordering: .relaxed) == 0)
+        #expect(counts.offThreads.load(ordering: .relaxed) == 0)
         #expect(
-            starved.load(ordering: .relaxed) == 0,
+            counts.starved.load(ordering: .relaxed) == 0,
             "the synchronous properties held the cooperative pool"
         )
     }
