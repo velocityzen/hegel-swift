@@ -735,7 +735,7 @@ A run starts from the settings the engine resolves, in this order:
 
 1. its built-in profiles: `development` locally, and `ci` when it detects a CI server (database
    off, derandomized);
-2. a `hegel.toml` in the package root or above;
+2. a `hegel.toml` in the current directory or above, the package root under `swift test`;
 3. `HEGEL_*` environment variables.
 
 Settings given in Swift override that result field by field, with one exception: an explicit
@@ -771,6 +771,21 @@ derandomize = false
 # a scheduled deep run: fresh inputs, every property 50 times deeper
 HEGEL_DEFAULT_PROFILE=nightly HEGEL_TEST_CASES_SCALE=50 swift test
 ```
+
+The engine finds `hegel.toml` and the failure database from the current directory. `swift test`
+runs a package's tests from its root, but Xcode and `xcodebuild test` start them elsewhere, such
+as `/private/tmp`. So `.hegel` finds the database from the test's package instead: the nearest
+directory above the test's file that holds a `Package.swift`.
+
+- The default database, `.hegel/examples/`, and a relative path from Swift, `hegel.toml` or
+  `HEGEL_DATABASE`, resolve against that directory however the run started. A disabled database
+  or an absolute path stays as it is.
+- `Settings(projectDirectory:)` names the directory yourself. Without Swift Testing, pass it to
+  `Property.run`.
+- libhegel can't yet be told where `hegel.toml` is. When the engine doesn't read the package's
+  `hegel.toml`, `.hegel` records a warning that names it: its profiles and default profile don't
+  apply to that run. A test that names one of its profiles fails with "unknown settings profile".
+  Run the tests from the package root to use them.
 
 The engine writes its own output to standard error: statistics from `showStatistics`, health
 check messages and, with `verbosity: .verbose`, each test case's draws and notes as it runs (a
@@ -894,6 +909,9 @@ release's checksums.
   are no iOS, tvOS, watchOS or visionOS slices yet, so property tests run on macOS, Linux and Windows only.
   iOS simulator slices can be built from the Rust sources and added to the XCFramework; the other
   Apple platforms need nightly Rust.
+- **`hegel.toml` outside `swift test`.** The engine reads `hegel.toml` only from the current
+  directory or above, and Xcode runs tests from elsewhere. `.hegel` warns when the package's
+  `hegel.toml` doesn't apply, but can't apply it until libhegel can be pointed at a config file.
 - **Traps.** A `fatalError`, failed `precondition` or force-unwrap in the code under test ends the
   test process. Hegel can't catch it or shrink it. Code that reports errors through `Result` and
   `throws` works fully.
