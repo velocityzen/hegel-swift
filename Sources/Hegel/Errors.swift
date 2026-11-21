@@ -20,6 +20,11 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
     /// The property passed, but no passing test case recorded these reach
     /// claims' event labels, out of `testCases` that passed.
     case unreached([String], testCases: Int)
+    /// The task running the property was cancelled, as Swift Testing's
+    /// `.timeLimit` does, and the run stopped before its verdict. A test
+    /// case that ended under cancellation is not a counterexample, and
+    /// nothing is stored in the database for it.
+    case cancelled
 
     public var description: String {
         switch self {
@@ -50,6 +55,8 @@ public enum HegelError: Error, Equatable, CustomStringConvertible {
                 testing what it claims to: widen its generators, or check the condition that records \
                 the event.
                 """
+            case .cancelled:
+                "Cancelled: the run stopped before its verdict because its task was cancelled."
         }
     }
 }
