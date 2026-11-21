@@ -126,6 +126,16 @@ them. On a suite, it applies to every test in it, and a test's own `.hegel(...)`
 suite's settings field by field. If you use other issue-handling traits on a test, list `.hegel`
 after them.
 
+The trait also runs its tests on threads of Hegel's own, as many as the machine has cores, not on
+Swift's cooperative pool. A synchronous `property` holds its thread for its whole run. Run in
+parallel on the cooperative pool, synchronous properties could hold every one of its threads, and
+async properties and Swift Testing's own reporting would wait until one ended, long enough for
+Hegel's TooSlow health check to fail the async properties.
+
+- An async `property` hands its test cases back to the cooperative pool, so it never waits for
+  synchronous ones. The rest of an async test runs on Hegel's threads, and can wait for one.
+- A test that sets a task executor preference of its own keeps it, and its properties run there.
+
 Draws throw to end a test case early, when it is rejected or the engine has used up its budget.
 Let those errors propagate.
 

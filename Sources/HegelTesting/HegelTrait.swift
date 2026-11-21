@@ -72,11 +72,29 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         // sees a property's issues before any other issue-handling trait on
         // the test does.
         try await HegelScope.$current.withValue(scope) {
-            try await IssueInterceptor.trait.provideScope(
-                for: test,
-                testCase: testCase,
-                performing: function
-            )
+            try await Self.preferringPropertyThreads {
+                try await IssueInterceptor.trait.provideScope(
+                    for: test,
+                    testCase: testCase,
+                    performing: function
+                )
+            }
+        }
+    }
+
+    /// Runs `operation` on Hegel's own threads, so that a synchronous
+    /// property blocks one of them rather than a thread of Swift's
+    /// cooperative pool. A task that already prefers an executor, its own or
+    /// an outer `.hegel`'s, keeps it.
+    static func preferringPropertyThreads(
+        _ operation: () async throws -> Void
+    ) async throws {
+        guard PropertyThreads.currentPreference == nil else {
+            try await operation()
+            return
+        }
+        try await withTaskExecutorPreference(PropertyThreads.shared) {
+            try await operation()
         }
     }
 

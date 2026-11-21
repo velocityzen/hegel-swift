@@ -114,43 +114,74 @@ public func property(
         return
     }
     let runner = PropertyRunner(scope: scope, sourceLocation: sourceLocation)
-    if let blob = scope.reproducing {
-        try await runner.finish(replaying: blob) { recorder in
+    guard PropertyThreads.shared.isPreferred else {
+        try await runner.run(
+            examples: examples,
+            reaching: reaching,
+            reachingAfter: reachingAfter,
+            body
+        )
+        return
+    }
+    // Hegel's threads are for code that blocks them. An async property
+    // runs on the cooperative pool, as it would without `.hegel`.
+    try await withTaskExecutorPreference(globalConcurrentExecutor) {
+        try await runner.run(
+            examples: examples,
+            reaching: reaching,
+            reachingAfter: reachingAfter,
+            body
+        )
+    }
+}
+
+extension PropertyRunner {
+    /// Runs the asynchronous property `body` and reports its failures.
+    fileprivate func run(
+        examples: [Example],
+        reaching: [String],
+        reachingAfter: [String: Int],
+        _ body: (TestCase) async throws -> Void
+    ) async throws {
+        let runner = self
+        if let blob = scope.reproducing {
+            try await runner.finish(replaying: blob) { recorder in
+                try await Property.run(
+                    settings: scope.settings,
+                    reproducing: blob,
+                    output: scope.output
+                ) { tc in
+                    try await runner.runCase(tc, recorder, body)
+                }
+            }
+            return
+        }
+        // A helper rather than a catch here: Swift 6.3's compiler crashes on a
+        // catch around a closure that captures `body`.
+        let judged = try await runner.judgingClaims { () async throws(HegelError) in
             try await Property.run(
                 settings: scope.settings,
-                reproducing: blob,
+                databaseKey: scope.databaseKey,
+                location: scope.location,
+                examples: examples,
+                reaching: reaching,
+                reachingAfter: reachingAfter,
+                output: scope.output,
+                { tc in try await runner.runCase(tc, nil, body) }
+            )
+        }
+        guard let outcome = judged else {
+            return
+        }
+        try await runner.report(outcome) { replay, recorder in
+            try await Property.run(
+                settings: replay.settings(scope.settings),
+                reproducing: replay.blob,
+                examples: replay.examples,
                 output: scope.output
             ) { tc in
                 try await runner.runCase(tc, recorder, body)
             }
-        }
-        return
-    }
-    // A helper rather than a catch here: Swift 6.3's compiler crashes on a
-    // catch around a closure that captures `body`.
-    let judged = try await runner.judgingClaims { () async throws(HegelError) in
-        try await Property.run(
-            settings: scope.settings,
-            databaseKey: scope.databaseKey,
-            location: scope.location,
-            examples: examples,
-            reaching: reaching,
-            reachingAfter: reachingAfter,
-            output: scope.output,
-            { tc in try await runner.runCase(tc, nil, body) }
-        )
-    }
-    guard let outcome = judged else {
-        return
-    }
-    try await runner.report(outcome) { replay, recorder in
-        try await Property.run(
-            settings: replay.settings(scope.settings),
-            reproducing: replay.blob,
-            examples: replay.examples,
-            output: scope.output
-        ) { tc in
-            try await runner.runCase(tc, recorder, body)
         }
     }
 }
