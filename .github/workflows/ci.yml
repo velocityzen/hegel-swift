@@ -56,8 +56,8 @@ jobs:
       - name: Package libhegel
         run: Scripts/package-libhegel.sh
 
-      - name: The checked-in header matches the release
-        run: git diff --exit-code libhegel/hegel.h
+      - name: The checked-in header and engine stub match the release
+        run: git diff --exit-code libhegel
 
       - name: Run tests
         run: swift test
@@ -122,6 +122,29 @@ jobs:
 
       - name: Run tests
         run: swift test
+
+  # libhegel has no build for these platforms, so Hegel links the engine stub
+  # in libhegel/ there. Linking the test bundles shows the stub covers every
+  # engine call; the properties themselves would only skip.
+  build-apple-platforms:
+    name: Build for ${{ matrix.platform }}
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [iOS Simulator, tvOS Simulator, watchOS Simulator, visionOS Simulator]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Package.swift needs Swift 6.3, and xcodebuild uses Xcode's own.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build the package and its tests
+        run: |
+          xcodebuild build-for-testing -scheme hegel-swift-Package \
+            -destination "generic/platform=${{ matrix.platform }}"
 
   # What a package that depends on hegel-swift gets: the binary targets from
   # the release URLs in Package.swift, checked against their checksums.

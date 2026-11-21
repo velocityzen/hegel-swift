@@ -281,6 +281,7 @@ final class RunDriver {
         blob: String?,
         output: (@Sendable (String) -> Void)?
     ) throws(HegelError) {
+        try requireEngine()
         let version = engineVersion
         guard version == expectedEngineVersion else {
             throw .versionMismatch(expected: expectedEngineVersion, actual: version)

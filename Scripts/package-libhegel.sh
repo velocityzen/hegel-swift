@@ -10,7 +10,9 @@
 #
 # Every downloaded file is checked against the .sha256 file upstream
 # publishes next to it. hegel.h is copied unchanged into
-# libhegel, so a version bump shows its ABI diff in review.
+# libhegel, so a version bump shows its ABI diff in review, and the engine
+# stub that platforms without libhegel link (libhegel/stub-generated.c) is
+# generated again from it.
 #
 # Usage: Scripts/package-libhegel.sh [version]
 #        (defaults to the version in LIBHEGEL_VERSION)
@@ -64,6 +66,7 @@ echo "Verifying checksums"
 )
 
 cp "$work/download/hegel.h" "$root/libhegel/hegel.h"
+"$root/Scripts/generate-engine-stub.sh"
 
 # Headers shared by every slice: the upstream header and a module map that
 # names the Swift module `CHegel`.
