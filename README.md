@@ -504,6 +504,22 @@ let parisTimes = Gen.zonedDateTime(zones: Zones(source: system))
 A source also answers queries outside a test: `resolve(_:in:)`, `offset(in:at:)`,
 `info(for:)` and `names`.
 
+`ZoneSource.foundation` is the database Foundation reads on the platform the tests run on, so
+values drawn against it resolve as `TimeZone` and `Calendar` resolve them there. Use it when the
+code under test does its zone arithmetic with Foundation:
+
+```swift
+let values = Gen.zonedDateTime(zones: Zones(source: .foundation))
+ZoneSource.setDefault(.foundation)  // or for every draw: once, before any test runs
+```
+
+- Its names are the tz database names Foundation reads, never one it reads its own way, such as
+  `GMT+1` or `PST`.
+- A zone's data is read from Foundation the first time a draw or query needs it: each transition
+  through 2200, then the yearly rule Foundation applies for ever after.
+- Its `version` is `TimeZone.timeZoneDataVersion`, which can differ between platforms and from
+  `tzdbVersion`.
+
 ### Foundation dates and zones
 
 Hegel's values meet Foundation's at the instant. No conversion goes through a `Calendar`, whose
@@ -525,6 +541,27 @@ that takes a `TimeZone`:
 ```swift
 let timeZones = Gen.zone().filter { TimeZone($0) != nil }.map { TimeZone($0)! }
 ```
+
+Drawn against `ZoneSource.foundation`, a value and Foundation agree in every zone: the value's
+instant shows its wall-clock time, or for a gap the time the clocks jumped to.
+
+```swift
+try Property.check { tc in
+    let value = try tc.draw(
+        .zonedDateTime(zones: Zones(source: .foundation), precision: .seconds),
+        named: "value"
+    )
+    let timeZone = TimeZone(value.zone)!
+    #expect(timeZone.secondsFromGMT(for: value.timestamp.date) == value.offset.seconds)
+    if value.kind != .gap {
+        #expect(LocalDateTime(value.timestamp.date, in: timeZone) == value.civil)
+    }
+}
+```
+
+Whole seconds keep the round trip exact: a `Date` far from the present can't hold every
+nanosecond. Foundation's `Calendar` agrees with the wall-clock time from 1583 until 506713-02-07,
+where its range ends.
 
 ## Stateful testing
 
