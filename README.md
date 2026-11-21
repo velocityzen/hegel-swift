@@ -116,6 +116,10 @@ struct ResultLaws {
 - `tc.note("...")` adds a line to the report. `try tc.target(score)` steers generation toward
   higher scores. `try tc.event("label")` feeds the statistics report.
 - Async works too: `try await property { tc in ... }`.
+- When the test is cancelled, by `.timeLimit` or anything else, the run stops at the test case
+  in flight and `property` throws `CancellationError`. That test case isn't a failure, so
+  nothing is shrunk, reported or stored, even if it threw or failed an expectation once it saw
+  the cancellation. Without Swift Testing, `Property.run` throws `HegelError.cancelled`.
 
 The trait is required. `property` needs it to see `#expect` failures before Swift Testing records
 them. On a suite, it applies to every test in it, and a test's own `.hegel(...)` overrides the

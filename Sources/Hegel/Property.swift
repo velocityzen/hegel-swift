@@ -43,7 +43,8 @@ public enum Property {
     ///     be called on any thread that runs the property's test case, such
     ///     as a concurrent worker's, and must not use the test case.
     /// - Throws: `HegelError` when the run ends without a verdict, such as a
-    ///   failed health check.
+    ///   failed health check, or `HegelError.cancelled` when the task
+    ///   running it is cancelled: the run stops after the test case in flight.
     public static func run(
         settings: Settings = Settings(),
         databaseKey: String? = nil,
@@ -64,8 +65,10 @@ public enum Property {
         )
         var explicitFailures: [PropertyFailure.Counterexample] = []
         for example in driver.examplesToRun(examples) {
+            try checkCancellation()
             let tc = TestCase(example: ExplicitDraws(example))
             let outcome = Result { try body(tc) }
+            try checkCancellation()
             if let failure = try finishExample(tc, outcome) {
                 explicitFailures.append(failure)
                 if !driver.settings.reportMultipleFailures {
@@ -105,8 +108,10 @@ public enum Property {
         )
         var explicitFailures: [PropertyFailure.Counterexample] = []
         for example in driver.examplesToRun(examples) {
+            try checkCancellation()
             let tc = TestCase(example: ExplicitDraws(example))
             let outcome = await result { try await body(tc) }
+            try checkCancellation()
             if let failure = try finishExample(tc, outcome) {
                 explicitFailures.append(failure)
                 if !driver.settings.reportMultipleFailures {
@@ -178,6 +183,14 @@ public enum Property {
         )
         if case .failed(let failure) = outcome {
             throw failure
+        }
+    }
+
+    /// Stops a run whose task was cancelled, such as by Swift Testing's
+    /// `.timeLimit`.
+    static func checkCancellation() throws(HegelError) {
+        if Task.isCancelled {
+            throw .cancelled
         }
     }
 
@@ -328,7 +341,11 @@ final class RunDriver {
         blob == nil && settings.phases.contains(.explicit) ? examples : []
     }
 
+    /// The next test case the engine schedules, or nil when the run is
+    /// over. A cancelled task gets no more: the run stops, and freeing it
+    /// drops the rest of the exploration.
     func nextTestCase() throws(HegelError) -> TestCase? {
+        try Property.checkCancellation()
         var handle: OpaquePointer?
         do {
             try context.call { hegel_next_test_case($0, run, &handle) }
@@ -388,6 +405,22 @@ final class RunDriver {
         var status = HEGEL_STATUS_VALID
         var failure: (origin: String, error: any Error)?
         var usageError: HegelError?
+
+        // A test case that ended under cancellation says nothing about the
+        // property: its body may have thrown `CancellationError` or stopped
+        // early. It completes as rejected, so it is never shrunk or stored,
+        // and the run stops.
+        if Task.isCancelled {
+            hegel_mark_complete(
+                context.raw,
+                tc.raw,
+                UInt32(truncatingIfNeeded: HEGEL_STATUS_INVALID.rawValue),
+                nil,
+                nil,
+                nil
+            )
+            throw .cancelled
+        }
 
         switch (outcome, tc.stop) {
             case (_, .rejected?):

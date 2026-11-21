@@ -314,13 +314,11 @@ struct PropertyRunner {
         try throwIfAny(thrown)
     }
 
-    /// Replays a blob the `.hegel(reproducing:)` trait gave.
-    /// Records a run's unmet reach claims as an issue at the property.
     /// Runs a property, recording an unmet reach claim as an issue: the
     /// result is then nil.
     func judgingClaims(
         _ run: () throws(HegelError) -> PropertyOutcome
-    ) throws(HegelError) -> PropertyOutcome? {
+    ) throws -> PropertyOutcome? {
         do {
             return try run()
         } catch {
@@ -332,7 +330,7 @@ struct PropertyRunner {
     /// result is then nil.
     func judgingClaims(
         _ run: () async throws(HegelError) -> PropertyOutcome
-    ) async throws(HegelError) -> PropertyOutcome? {
+    ) async throws -> PropertyOutcome? {
         do {
             return try await run()
         } catch {
@@ -341,14 +339,22 @@ struct PropertyRunner {
     }
 
     /// Records `error` as an issue if it is an unmet reach claim, and
-    /// rethrows it otherwise.
-    private func recordUnreached(_ error: HegelError) throws(HegelError) -> PropertyOutcome? {
+    /// rethrows it otherwise: a cancelled run as `CancellationError`.
+    private func recordUnreached(_ error: HegelError) throws -> PropertyOutcome? {
         guard error.isUnreached else {
-            throw error
+            throw Self.rethrown(error)
         }
         Issue.record(Comment(rawValue: error.description), sourceLocation: sourceLocation)
         return nil
     }
+
+    /// A run error as `property` throws it: a cancelled run throws
+    /// `CancellationError`, as cancelled work does.
+    static func rethrown(_ error: HegelError) -> any Error {
+        error == .cancelled ? CancellationError() : error
+    }
+
+    /// Replays a blob the `.hegel(reproducing:)` trait gave.
 
     func finish(replaying blob: String, _ run: (CaseRecorder) throws -> PropertyOutcome) throws {
         let recorder = CaseRecorder(
@@ -361,6 +367,8 @@ struct PropertyRunner {
                 Comment(rawValue: HegelError.notReproduced(blob: blob).description),
                 sourceLocation: sourceLocation
             )
+        } catch HegelError.cancelled {
+            throw CancellationError()
         }
     }
 
@@ -378,6 +386,8 @@ struct PropertyRunner {
                 Comment(rawValue: HegelError.notReproduced(blob: blob).description),
                 sourceLocation: sourceLocation
             )
+        } catch HegelError.cancelled {
+            throw CancellationError()
         }
     }
 
