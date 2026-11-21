@@ -4,9 +4,23 @@ import Testing
 
 @testable import HegelTesting
 
-/// A file or directory name: never `.` or `..`.
+/// A file or directory name: never `.` or `..`, and on Windows, which
+/// can't create one, never ending in a space or a dot.
 private let pathComponent = Gen.array(of: .element(of: Array("ab-_. éZ0")), count: 0...6)
-    .map { "d" + String($0) }
+    .map { characters in
+        var name = "d" + String(characters)
+        #if os(Windows)
+            while name.last == " " || name.last == "." {
+                name.removeLast()
+            }
+        #endif
+        return name
+    }
+
+/// `name` in the directory at `directory`.
+private func file(_ name: String, in directory: String) -> String {
+    Settings.joinPath(directory, name)
+}
 
 /// A fresh temporary directory to build a tree of directories in.
 private struct Tree {
@@ -47,7 +61,7 @@ private struct Tree {
 
 /// `path` with its symbolic links resolved, as the engine sees it.
 private func real(_ path: String) -> String {
-    URL(filePath: path).resolvingSymlinksInPath().path(percentEncoded: false)
+    PackageDirectory.canonical(path)
 }
 
 @Suite("package directory", .hegel)
@@ -60,6 +74,46 @@ struct PackageDirectoryTests {
                 "/" + names[..<$0].joined(separator: "/")
             }
             #expect(PackageDirectory.ancestors(of: path) == above)
+        }
+    }
+
+    @Test func resolvesAPathInThePlatformsOwnForm() throws {
+        #if os(Windows)
+            let claims: [String] = []
+        #else
+            let claims = ["through a link"]
+        #endif
+        try property(reaching: claims) { tc in
+            let names = try tc.draw(.array(of: pathComponent, count: 0...4), named: "names")
+            #if os(Windows)
+                let throughLink = false
+            #else
+                let throughLink = try tc.draw(.bool(), named: "throughLink")
+            #endif
+            let tree = try Tree()
+            defer { tree.remove() }
+            try tree.makeDirectory(names)
+            var path = tree.path(names)
+            if throughLink {
+                path = tree.root + "/link"
+                try FileManager.default.createSymbolicLink(
+                    atPath: path,
+                    withDestinationPath: tree.path(names)
+                )
+                try tc.event("through a link")
+            }
+
+            let resolved = PackageDirectory.canonical(path)
+            let separator = String(Settings.pathSeparator)
+            #expect(FileManager.default.fileExists(atPath: resolved))
+            #expect(Settings.isAbsolutePath(resolved))
+            #expect(!resolved.hasSuffix(separator + "link"))
+            #expect(resolved.hasSuffix(names.map { separator + $0 }.joined()))
+            #if os(Windows)
+                // A drive's path, such as `C:\Users\…`.
+                #expect(resolved.dropFirst().first == ":")
+                #expect(!resolved.contains("/"))
+            #endif
         }
     }
 
@@ -146,7 +200,7 @@ struct PackageDirectoryTests {
                 (0...names.count).reversed()
                     .map { Array(names.prefix($0)) }
                     .first(where: holding.contains)
-                    .map { real(tree.path($0)) + "/hegel.toml" }
+                    .map { file("hegel.toml", in: real(tree.path($0))) }
             }
             let own = nearest(package)
             let seen = nearest(current)
@@ -196,7 +250,7 @@ struct PackageDirectoryTests {
 
         try #require(issues.count == 1)
         #expect(issues[0].severity == .warning)
-        #expect(issues[0].commentText.contains(real(package) + "/hegel.toml"))
+        #expect(issues[0].commentText.contains(file("hegel.toml", in: real(package))))
         #expect(issues[0].commentText.contains(elsewhere))
     }
 

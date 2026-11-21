@@ -110,8 +110,18 @@ enum PackageDirectory {
         FileManager.default.fileExists(atPath: path)
     }
 
-    /// `path` with its symbolic links resolved.
-    private static func canonical(_ path: String) -> String {
-        URL(filePath: path).resolvingSymlinksInPath().path(percentEncoded: false)
+    /// `path` with its symbolic links resolved, in the platform's own form:
+    /// on Windows, `C:\Users\…` rather than a file URL's `/C:/Users/…`.
+    static func canonical(_ path: String) -> String {
+        let resolved = URL(filePath: path).resolvingSymlinksInPath().path(percentEncoded: false)
+        #if os(Windows)
+            var native = Substring(resolved)
+            if native.first == "/", native.dropFirst(2).first == ":" {
+                native = native.dropFirst()
+            }
+            return String(native.map { $0 == "/" ? Settings.pathSeparator : $0 })
+        #else
+            return resolved
+        #endif
     }
 }
