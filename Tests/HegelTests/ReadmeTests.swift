@@ -104,6 +104,27 @@ struct ReadmeTests {
         }
     }
 
+    @Test("zoned datetimes against Foundation's database")
+    func foundationZoneSource() throws {
+        // `ZoneSource.setDefault(.foundation)` is left out: tests share the
+        // default.
+        let values = Gen.zonedDateTime(zones: Zones(source: .foundation))
+
+        let names = Set(ZoneSource.foundation.names)
+        try Property.check(settings: isolated) { tc in
+            let value = try tc.draw(
+                .zonedDateTime(zones: Zones(source: .foundation), precision: .seconds),
+                named: "value"
+            )
+            let timeZone = TimeZone(value.zone)!
+            #expect(timeZone.secondsFromGMT(for: value.timestamp.date) == value.offset.seconds)
+            if value.kind != .gap {
+                #expect(LocalDateTime(value.timestamp.date, in: timeZone) == value.civil)
+            }
+            #expect(names.contains(try tc.draw(values).zone.name))
+        }
+    }
+
     @Test("a state machine over a pool")
     func bankMachine() throws {
         struct Bank {

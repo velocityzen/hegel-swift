@@ -819,7 +819,8 @@ struct FoundationBridgeTests {
 
     @Test("names outside the tz database bridge to no zone")
     func foreignNames() throws {
-        let names = Set(ZoneTests.bundledNames)
+        // The tz database names Foundation reads, newer ones included.
+        let names = Set(ZoneSource.foundation.names).union(ZoneTests.bundledNames)
         let foreign: Gen<String> = .oneOf(
             .string(),
             .element(of: ["GMT+1", "PST", "utc", "america/new_york", "Mars/Base"]),
@@ -858,5 +859,263 @@ struct FoundationBridgeTests {
             LocalDateTime(date, in: paris).time.secondsSinceMidnight
                 == paris.secondsFromGMT(for: date)
         )
+    }
+}
+
+/// The instant `seconds` (Unix seconds) as a `Date`, exact for every
+/// second of `Timestamp`'s range.
+private func date(_ seconds: Int) -> Date {
+    Date(timeIntervalSince1970: Double(seconds))
+}
+
+/// 506713-02-07T00:00:00Z, in Unix seconds: the end of the range
+/// Foundation's calendars compute in (`Date.validCalendarRange`). They
+/// read every later instant as this one.
+private let calendarLimit = 15_928_153_804_800
+
+/// The instants, ascending, at which Foundation says the clocks of
+/// `timeZone` show `wall`: the wall-clock second, in Unix seconds as if
+/// it were UTC. None for a skipped wall time, two for a repeated one.
+private func foundationInstants(showing wall: Int, in timeZone: TimeZone) -> [Int] {
+    // An instant showing `wall` lies within a day of it, as every offset
+    // does, so its offset is one in force within a day of those
+    // instants: one Foundation reports a transition to, or one an
+    // hourly sample finds, should a report be missing.
+    let window = 2 * 86_400
+    var offsets = Set(
+        stride(from: wall - window, through: wall + window, by: 3600).map {
+            timeZone.secondsFromGMT(for: date($0))
+        }
+    )
+    var at = date(wall - window)
+    while let next = timeZone.nextDaylightSavingTimeTransition(after: at),
+        next <= date(wall + window)
+    {
+        offsets.insert(timeZone.secondsFromGMT(for: next))
+        at = next
+    }
+    return offsets.map { wall - $0 }
+        .filter { timeZone.secondsFromGMT(for: date($0)) == wall - $0 }
+        .sorted()
+}
+
+@Suite("Foundation zone source")
+struct FoundationZoneSourceTests {
+    static let source = ZoneSource.foundation
+    static let names = source.names
+    /// The years zones' histories lie in, and the end of the probe.
+    static let history =
+        Timestamp(
+            utc: LocalDateTime(date: CalendarDate(year: 1800, month: 1, day: 1))
+        )...Timestamp(utc: LocalDateTime(date: CalendarDate(year: 2300, month: 1, day: 1)))
+
+    /// Wall-clock times in `timeZone`: any, or one near the next
+    /// transition Foundation reports after it, among the wall times it
+    /// skipped or repeated or the first after them.
+    static func wallTimes(around timeZone: TimeZone) -> Gen<LocalDateTime> {
+        Gen { tc in
+            let civil = try tc.draw(
+                .oneOf(.localDateTime(), Gen<Timestamp>.timestamp(in: history).map(\.utc))
+            )
+            let wall = Timestamp(utc: civil).seconds
+            guard try tc.draw(.bool()),
+                let next = timeZone.nextDaylightSavingTimeTransition(after: date(wall))
+            else { return civil }
+            let transition = Int(next.timeIntervalSince1970)
+            let before = timeZone.secondsFromGMT(for: date(transition - 1))
+            let after = timeZone.secondsFromGMT(for: next)
+            let shift = try tc.draw(
+                .oneOf(
+                    .int(in: -86_400...86_400),
+                    .int(in: min(before, after)...max(before, after))
+                )
+            )
+            let shifted = transition + shift
+            guard (Timestamp.min.seconds...Timestamp.max.seconds).contains(shifted) else {
+                return civil
+            }
+            return Timestamp(seconds: shifted, nanoseconds: civil.time.nanosecond).utc
+        }
+    }
+
+    /// Checks `value` against Foundation's reading of its zone: the
+    /// instants that show its wall-clock time, its offsets, and its
+    /// wall-clock time read back through `LocalDateTime(_:in:)` and, from
+    /// 1583 on, through `Calendar`.
+    private func checkAgainstFoundation(_ value: ZonedDateTime) throws {
+        let timeZone = try #require(TimeZone(identifier: value.zone.name))
+        #expect(TimeZone(value.zone) != nil)
+        let wall = Timestamp(utc: value.civil).seconds
+        let instants = foundationInstants(showing: wall, in: timeZone)
+        let offsetsAt = instants.map { UTCOffset.known(seconds: wall - $0) }
+        switch value.kind {
+            case .unique:
+                #expect(instants == [value.timestamp.seconds])
+                #expect(offsetsAt == [value.offset])
+                #expect(value.offsetBefore == value.offset && value.offsetAfter == value.offset)
+            case .fold:
+                #expect(instants.count == 2)
+                #expect(offsetsAt == [value.offsetBefore, value.offsetAfter])
+                #expect(value.timestamp.seconds == (value.fold ? instants.last : instants.first))
+            case .gap:
+                #expect(instants.isEmpty)
+                let before = try #require(value.offsetBefore.seconds)
+                let after = try #require(value.offsetAfter.seconds)
+                #expect(before < after)
+                // The wall time read with either offset lands on the other
+                // side of the transition.
+                #expect(timeZone.secondsFromGMT(for: date(wall - after)) == before)
+                #expect(timeZone.secondsFromGMT(for: date(wall - before)) == after)
+                #expect(value.timestamp.seconds == wall - before)
+        }
+        let instant = date(value.timestamp.seconds)
+        let offset = try #require(value.offset.seconds)
+        // Foundation's own offset moves a wall time near either end of the
+        // range past it, so the reads below need the two to agree.
+        try #require(offset == timeZone.secondsFromGMT(for: instant))
+        // The wall-clock time Foundation shows at the value's instant: the
+        // value's own, or for a gap the one the clocks jumped to.
+        let shown = LocalDateTime(instant, in: timeZone)
+        #expect(Timestamp(utc: shown).seconds == value.timestamp.seconds + offset)
+        if value.kind != .gap {
+            #expect(shown == Timestamp(seconds: wall).utc)
+        }
+        // Before 1582-10-15 Foundation's Gregorian calendar is Julian, and
+        // it reads an instant past its range as the range's last.
+        if shown.date.year > 1582 && value.timestamp.seconds < calendarLimit {
+            let fields = Calendar(identifier: .gregorian).dateComponents(
+                in: timeZone,
+                from: instant
+            )
+            #expect(fields.year == shown.date.year)
+            #expect(fields.month == shown.date.month)
+            #expect(fields.day == shown.date.day)
+            #expect(fields.hour == shown.time.hour)
+            #expect(fields.minute == shown.time.minute)
+            #expect(fields.second == shown.time.second)
+        }
+    }
+
+    @Test("the source holds the tz names Foundation reads, at its version")
+    func names() throws {
+        let names = Set(Self.names)
+        let bundled = Set(ZoneSource.bundled.names)
+        #expect(Self.names == Self.names.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) })
+        for name in names {
+            #expect(TimeZone(identifier: name) != nil)
+            #expect(bundled.contains(name) || name.contains("/"))
+            #expect(try Self.source.info(for: name) != nil)
+        }
+        #expect(!names.contains(Zone.unknownName))
+        for name in bundled.union(TimeZone.knownTimeZoneIdentifiers.filter { $0.contains("/") })
+        where name != Zone.unknownName && TimeZone(identifier: name) != nil {
+            #expect(names.contains(name))
+        }
+        // Names Foundation reads its own way: abbreviations, and offsets
+        // signed the other way from POSIX's `Etc/GMT+1`.
+        for name in ["GMT+1", "GMT+0100", "PST", "IST", "BST", "JST"] {
+            #expect(TimeZone(identifier: name) != nil)
+            #expect(!names.contains(name))
+            #expect(try Self.source.info(for: name) == nil)
+            #expect(TimeZone(Zone(name: name, primaryName: name)) == nil)
+        }
+        #expect(Self.source.version == TimeZone.timeZoneDataVersion)
+    }
+
+    @Test("offsets agree with Foundation at every instant, transitions included")
+    func offsets() throws {
+        try Property.check(settings: thorough) { tc in
+            let name = try tc.draw(.element(of: Self.names), named: "name")
+            let timeZone = try #require(TimeZone(identifier: name))
+            var instant = try tc.draw(.oneOf(.timestamp(), .timestamp(in: Self.history))).seconds
+            if try tc.draw(.bool()),
+                let next = timeZone.nextDaylightSavingTimeTransition(after: date(instant))
+            {
+                // Either side of Foundation's next transition, which may
+                // lie past the end of the range.
+                let before = try tc.draw(.bool())
+                instant = Int(next.timeIntervalSince1970) - (before ? 1 : 0)
+                try tc.assume(instant <= Timestamp.max.seconds)
+            }
+            let offset = try Self.source.offset(in: name, at: Timestamp(seconds: instant))
+            #expect(offset.offset == .known(seconds: timeZone.secondsFromGMT(for: date(instant))))
+            #expect(offset.isDST == timeZone.isDaylightSavingTime(for: date(instant)))
+        }
+    }
+
+    @Test("every zone agrees with Foundation either side of each of its transitions")
+    func everyTransition() throws {
+        // Past the end of the probe, the source and Foundation both apply
+        // a yearly rule, a function of the year's calendar, which repeats
+        // every 400 years: agreeing through one cycle past the probe,
+        // they agree for ever.
+        let lastYear = Zone.Oracle.foundationYears.upperBound
+        let end = Timestamp(
+            utc: LocalDateTime(date: CalendarDate(year: lastYear + 401, month: 1, day: 1))
+        ).seconds
+        for name in Self.names {
+            let timeZone = try #require(TimeZone(identifier: name))
+            func agrees(at instant: Int) throws -> Bool {
+                let offset = try Self.source.offset(in: name, at: Timestamp(seconds: instant))
+                return offset.offset == .known(seconds: timeZone.secondsFromGMT(for: date(instant)))
+                    && offset.isDST == timeZone.isDaylightSavingTime(for: date(instant))
+            }
+            var at = date(Timestamp.min.seconds)
+            #expect(try agrees(at: Timestamp.min.seconds), "\(name) at the start")
+            while let next = timeZone.nextDaylightSavingTimeTransition(after: at), next < date(end)
+            {
+                let instant = Int(next.timeIntervalSince1970)
+                #expect(
+                    try agrees(at: instant - 1),
+                    "\(name) before \(Timestamp(seconds: instant))"
+                )
+                #expect(try agrees(at: instant), "\(name) at \(Timestamp(seconds: instant))")
+                at = next
+            }
+        }
+    }
+
+    @Test("zoned datetimes drawn against Foundation's database read back through Foundation")
+    func drawn() throws {
+        try Property.check(settings: thorough) { tc in
+            let precision = try tc.draw(.element(of: Precision.allCases))
+            let ambiguous = try tc.draw(.element(of: ZonedDateTime.Ambiguous.allCases))
+            let value = try tc.draw(
+                .zonedDateTime(
+                    zones: Zones(names: Self.names, source: Self.source),
+                    precision: precision,
+                    ambiguous: ambiguous
+                ),
+                named: "value"
+            )
+            try checkAgainstFoundation(value)
+        }
+    }
+
+    @Test("wall-clock times resolve as Foundation reads them, around its transitions too")
+    func resolved() throws {
+        let range = Timestamp.min.seconds...Timestamp.max.seconds
+        try Property.check(settings: thorough, reaching: ["gap", "fold"]) { tc in
+            let name = try tc.draw(.element(of: Self.names), named: "name")
+            let timeZone = try #require(TimeZone(identifier: name))
+            let civil = try tc.draw(Self.wallTimes(around: timeZone), named: "civil")
+            let resolved: ZonedDateTime
+            do {
+                resolved = try Self.source.resolve(civil, in: name)
+            } catch HegelError.usage {
+                // Only a wall time near either end of the range, whose
+                // instant lies past it, fails to resolve.
+                let wall = Timestamp(utc: civil).seconds
+                let instants = foundationInstants(showing: wall, in: timeZone)
+                #expect(instants.first.map { !range.contains($0) } == true)
+                return
+            }
+            try checkAgainstFoundation(resolved)
+            switch resolved.kind {
+                case .unique: break
+                case .gap: try tc.event("gap")
+                case .fold: try tc.event("fold")
+            }
+        }
     }
 }

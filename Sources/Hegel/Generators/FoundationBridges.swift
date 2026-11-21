@@ -56,13 +56,15 @@ extension TimeZone {
     /// opaque zone, a name only your own zone source knows) or Foundation
     /// has no zone by that name. Foundation reads some names outside the
     /// tz database its own way, `GMT+1` an hour east where POSIX puts it
-    /// west and `PST` as Los Angeles, so those give nil too.
+    /// west and `PST` as Los Angeles, so those give nil too. The names
+    /// that give a zone are those of `ZoneSource.foundation`.
     ///
     /// The zone's rules are Foundation's, not the zone source's: a zone
     /// whose rules changed lately can differ between the two databases,
-    /// and `tzdbVersion` names the bundled one.
+    /// and `tzdbVersion` names the bundled one. Draw against
+    /// `ZoneSource.foundation` for zones that agree with Foundation.
     public init?(_ zone: Zone) {
-        guard tzdbNames.contains(zone.name) else { return nil }
+        guard foundationZoneNames.contains(zone.name) else { return nil }
         self.init(identifier: zone.name)
     }
 
@@ -76,6 +78,3 @@ extension TimeZone {
         self = zone
     }
 }
-
-/// Every name in the bundled tz database.
-private let tzdbNames = Set(ZoneSource.bundled.names)
