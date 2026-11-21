@@ -14,7 +14,8 @@ A report holds:
 - `Falsifying example:` — every named draw as `let name = value`, state machine steps under
   `Step N: rule { ... }`, `repeat` iterations under `// Repetition #N`, concurrent lines prefixed
   `[worker N +Xms]`, and the `tc.note` lines;
-- the trait that replays it: `.hegel(reproducing: "...")`.
+- the trait that replays it: `.hegel(reproducing: "...")`, and in a parameterized test
+  `.hegel(reproducing: "...", arguments: "...")`, which replays only the test case that failed.
 
 A failing explicit example is reported under `Falsifying explicit example:` and has no blob.
 Failures at different source locations, or thrown errors of different types, are different origins

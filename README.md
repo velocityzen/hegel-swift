@@ -781,6 +781,20 @@ Every report ends with a trait that replays the minimal example:
 The blob only works with the libhegel version that produced it. Remove the trait once the bug is
 fixed.
 
+In a parameterized test, each test case keeps its own failures in the database, and the trait
+names the arguments of the test case that failed. Only that test case replays the blob; the others
+explore as usual:
+
+```swift
+@Test(
+    .hegel(reproducing: "AXicY2VgYGBkZOBiZEBhMAAAAd8AIQ==", arguments: "mode: .fast"),
+    arguments: Mode.allCases
+)
+func roundTrip(mode: Mode) throws {
+    try property { tc in ... }
+}
+```
+
 ## Without Swift Testing
 
 `Hegel` has no test-framework dependency. `Property.check` throws a `PropertyFailure` when the
