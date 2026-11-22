@@ -1,5 +1,6 @@
 import Foundation
 import Hegel
+import Synchronization
 import Testing
 
 @testable import HegelTesting
@@ -20,6 +21,24 @@ private let pathComponent = Gen.array(of: .element(of: Array("ab-_. éZ0")), cou
 /// `name` in the directory at `directory`.
 private func file(_ name: String, in directory: String) -> String {
     Settings.joinPath(directory, name)
+}
+
+/// An environment in memory that records each value set.
+private final class Variables: Sendable {
+    private let values = Mutex<[String: String]>([:])
+    private let writes = Mutex<[String]>([])
+
+    var environment: EngineConfig.Environment {
+        EngineConfig.Environment(
+            get: { name in self.values.withLock { $0[name] } },
+            set: { name, value in
+                self.values.withLock { $0[name] = value }
+                self.writes.withLock { $0.append(value) }
+            }
+        )
+    }
+
+    var written: [String] { writes.withLock { $0 } }
 }
 
 /// A fresh temporary directory to build a tree of directories in.
@@ -150,10 +169,14 @@ struct PackageDirectoryTests {
         }
     }
 
-    @Test func tellsWhenTheEngineDoesntReadThePackagesConfig() throws {
+    // Each claim needs a source and a tree to line up, so more cases than
+    // the default.
+    @Test(.hegel(testCases: 400))
+    func tellsWhenTheEngineDoesntReadThePackagesConfig() throws {
         var claims = [
-            "the engine reads none", "the engine reads another", "the engine reads it",
-            "the package has none",
+            "the engine finds none", "the engine finds another", "HEGEL_CONFIG names another",
+            "HEGEL_CONFIG names a relative path", "another package's was chosen",
+            "the engine reads it", "the package has none",
         ]
         #if !os(Windows)
             claims.append("the package is reached through a link")
@@ -173,6 +196,15 @@ struct PackageDirectoryTests {
                 .array(of: .bool(), count: directories.count...directories.count),
                 named: "configs"
             )
+            // Where the engine's hegel.toml comes from: its search from the
+            // current directory, or a file in one of the directories that
+            // HEGEL_CONFIG names or Hegel chose for another package.
+            let source = try tc.draw(
+                .element(of: ["search", "HEGEL_CONFIG", "chosen"]),
+                named: "source"
+            )
+            let named = try tc.draw(.element(of: directories), named: "named")
+            let relative = try tc.draw(.bool(), named: "relative")
             #if os(Windows)
                 let throughLink = false
             #else
@@ -203,16 +235,48 @@ struct PackageDirectoryTests {
                     .map { file("hegel.toml", in: real(tree.path($0))) }
             }
             let own = nearest(package)
-            let seen = nearest(current)
+            let namedConfig = file("hegel.toml", in: real(tree.path(named)))
+            let engine: EngineConfig.Source
+            let read: String?
+            let reading: PackageDirectory.Reading
+            switch source {
+                case "search":
+                    engine = .search
+                    read = nearest(current)
+                    reading = .search(found: read)
+                case "HEGEL_CONFIG":
+                    // The engine opens a relative path from the current
+                    // directory.
+                    let path =
+                        relative && named.starts(with: current)
+                        ? (named.dropFirst(current.count) + ["hegel.toml"]).joined(separator: "/")
+                        : file("hegel.toml", in: tree.path(named))
+                    engine = .environment(path)
+                    read = namedConfig
+                    reading = .environment(path)
+                    if !Settings.isAbsolutePath(path) {
+                        try tc.event("HEGEL_CONFIG names a relative path")
+                    }
+                default:
+                    engine = .chosen(namedConfig)
+                    read = namedConfig
+                    reading = .chosen(namedConfig)
+            }
             let unseen = PackageDirectory.unseenConfig(
                 package: packagePath,
-                currentDirectory: tree.path(current)
+                currentDirectory: tree.path(current),
+                engine: engine
             )
 
-            if let own, own != seen {
+            if let own, own != read {
                 #expect(unseen?.config == own)
-                #expect(unseen?.seen == seen)
-                try tc.event(seen == nil ? "the engine reads none" : "the engine reads another")
+                #expect(unseen?.reading == reading)
+                switch reading {
+                    case .search(found: nil): try tc.event("the engine finds none")
+                    case .search: try tc.event("the engine finds another")
+                    case .environment: try tc.event("HEGEL_CONFIG names another")
+                    case .chosen: try tc.event("another package's was chosen")
+                }
             } else {
                 #expect(unseen == nil)
                 try tc.event(own == nil ? "the package has none" : "the engine reads it")
@@ -223,35 +287,147 @@ struct PackageDirectoryTests {
         }
     }
 
+    @Test func pointsTheEngineAtThePackagesConfig() throws {
+        try property(
+            reaching: [
+                "pointed the engine at it", "the engine finds it", "another package's applies",
+                "no hegel.toml",
+            ]
+        ) { tc in
+            let name = Gen.element(of: ["a", "b"])
+            let first = try tc.draw(.array(of: name, count: 0...3), named: "first")
+            let second = try tc.draw(.array(of: name, count: 0...3), named: "second")
+            let current = try tc.draw(.array(of: name, count: 0...3), named: "current")
+            let directories = Set(
+                [first, second, current].flatMap { names in
+                    (0...names.count).map { Array(names.prefix($0)) }
+                }
+            ).sorted { $0.lexicographicallyPrecedes($1) }
+            let configs = try tc.draw(
+                .array(of: .bool(), count: directories.count...directories.count),
+                named: "configs"
+            )
+            let tree = try Tree()
+            defer { tree.remove() }
+            for names in [first, second, current] {
+                try tree.makeDirectory(names)
+            }
+            let holding = Set(zip(directories, configs).filter(\.1).map(\.0))
+            for directory in holding {
+                try tree.touch("hegel.toml", in: directory)
+            }
+            func nearest(_ names: [String]) -> String? {
+                (0...names.count).reversed()
+                    .map { Array(names.prefix($0)) }
+                    .first(where: holding.contains)
+                    .map { file("hegel.toml", in: real(tree.path($0))) }
+            }
+
+            // Two packages' tests in one process, the first prepared first.
+            let variables = Variables()
+            let engine = EngineConfig(environment: variables.environment)
+            for package in [first, second] {
+                PackageDirectory.chooseConfig(
+                    package: tree.path(package),
+                    currentDirectory: tree.path(current),
+                    engine: engine
+                )
+            }
+
+            // The first package with a hegel.toml decides.
+            let found = nearest(current)
+            let (deciding, other) = nearest(first) == nil ? (second, first) : (first, second)
+            let applied = nearest(deciding)
+            #expect(variables.written == (applied == found ? [] : applied.map { [$0] } ?? []))
+            func unseen(_ package: [String]) -> (config: String, reading: PackageDirectory.Reading)?
+            {
+                PackageDirectory.unseenConfig(
+                    package: tree.path(package),
+                    currentDirectory: tree.path(current),
+                    engine: engine.source
+                )
+            }
+            #expect(unseen(deciding) == nil)
+            if let applied, let otherConfig = nearest(other), otherConfig != applied {
+                #expect(unseen(other)?.config == otherConfig)
+                #expect(
+                    unseen(other)?.reading
+                        == (applied == found ? .search(found: found) : .chosen(applied))
+                )
+                try tc.event("another package's applies")
+            } else {
+                #expect(unseen(other) == nil)
+            }
+            switch applied {
+                case nil: try tc.event("no hegel.toml")
+                case found: try tc.event("the engine finds it")
+                default: try tc.event("pointed the engine at it")
+            }
+        }
+    }
+
     @Test(.capturingIssues) func warnsOnceForEachPackage() throws {
         let tree = try Tree()
         defer { tree.remove() }
-        try tree.touch("hegel.toml", in: ["package"])
+        for name in ["first", "second", "third"] {
+            try tree.touch("hegel.toml", in: [name])
+        }
         try tree.makeDirectory(["elsewhere"])
-        try tree.makeDirectory(["package", "inner"])
-        let package = tree.path(["package"])
+        try tree.makeDirectory(["first", "inner"])
         let elsewhere = tree.path(["elsewhere"])
+        let chosen = file("hegel.toml", in: real(tree.path(["chosen"])))
+        // Each package, where the engine's hegel.toml comes from, and what
+        // the warning says of it.
+        let packages: [(name: String, engine: EngineConfig.Source, says: String)] = [
+            ("first", .search, elsewhere),
+            ("second", .environment("custom.toml"), "HEGEL_CONFIG names custom.toml"),
+            ("third", .chosen(chosen), chosen),
+        ]
 
         let issues = capture {
-            for _ in 0..<2 {
-                PackageDirectory.warnIfConfigUnseen(
-                    package: package,
-                    currentDirectory: elsewhere,
-                    sourceLocation: #_sourceLocation
-                )
+            for package in packages {
+                for _ in 0..<2 {
+                    PackageDirectory.warnIfConfigUnseen(
+                        package: tree.path([package.name]),
+                        currentDirectory: elsewhere,
+                        engine: package.engine,
+                        sourceLocation: #_sourceLocation
+                    )
+                }
             }
             // A package whose hegel.toml the engine reads gets no warning.
             PackageDirectory.warnIfConfigUnseen(
-                package: tree.path(["package", "inner"]),
-                currentDirectory: package,
+                package: tree.path(["first", "inner"]),
+                currentDirectory: tree.path(["first"]),
+                engine: .search,
                 sourceLocation: #_sourceLocation
             )
         }
 
-        try #require(issues.count == 1)
-        #expect(issues[0].severity == .warning)
-        #expect(issues[0].commentText.contains(file("hegel.toml", in: real(package))))
-        #expect(issues[0].commentText.contains(elsewhere))
+        try #require(issues.count == packages.count)
+        for (issue, package) in zip(issues, packages) {
+            #expect(issue.severity == .warning)
+            #expect(
+                issue.commentText.contains(file("hegel.toml", in: real(tree.path([package.name]))))
+            )
+            #expect(issue.commentText.contains(package.says))
+        }
+    }
+
+    /// The package's own hegel.toml defines the `package-config` profile,
+    /// which the engine knows wherever the test process started.
+    @Test(.hegel(profile: "package-config"))
+    func readsThePackagesConfig() throws {
+        try property { tc in
+            _ = try tc.draw(.int(), named: "n")
+        }
+        let package = try #require(HegelScope.current?.settings.projectDirectory)
+        let unseen = PackageDirectory.unseenConfig(
+            package: package,
+            currentDirectory: FileManager.default.currentDirectoryPath,
+            engine: EngineConfig.shared.source
+        )
+        #expect(unseen == nil)
     }
 
     @Test func runsPropertiesInTheTestsPackage() throws {

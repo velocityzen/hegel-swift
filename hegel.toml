@@ -1,0 +1,5 @@
+# The profile hegel-swift's own tests use to check that the engine reads
+# this package's hegel.toml wherever the test process starts, as under
+# Xcode, which starts it outside the package.
+[profiles.package-config]
+test_cases = 10

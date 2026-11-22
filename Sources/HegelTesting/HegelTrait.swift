@@ -52,6 +52,15 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         test.isSuite ? nil : self
     }
 
+    /// Points the engine at the `hegel.toml` of the test's package. Swift
+    /// Testing prepares every test before it runs any, so this comes before
+    /// the engine loads its config.
+    public func prepare(for test: Test) async throws {
+        if let package = PackageDirectory.of(test.sourceLocation.filePath) {
+            PackageDirectory.chooseConfig(package: package)
+        }
+    }
+
     @concurrent
     public func provideScope(
         for test: Test,

@@ -324,9 +324,16 @@ final class EngineSettings {
     let raw: OpaquePointer
     let context = EngineContext()
 
-    init(_ settings: Settings, databaseKey: String?, location: TestLocation?) throws(HegelError) {
+    init(
+        _ settings: Settings,
+        databaseKey: String?,
+        location: TestLocation?,
+        config: EngineConfig = .shared
+    ) throws(HegelError) {
         var handle: OpaquePointer?
         let context = self.context
+        // The first resolution loads the engine's hegel.toml.
+        config.resolving()
         do {
             if let profile = settings.profile {
                 try profile.withHegelString { (name) throws(EngineError) in
