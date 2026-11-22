@@ -5,9 +5,11 @@ import Synchronization
 /// finished transform or a delivered value. It tells a slow test case, which
 /// keeps beating, from a stuck one.
 public final class Heartbeat: Sendable {
-    private let start = ContinuousClock.now
+    private let created = ContinuousClock.now
     private let beats = Atomic<Int>(0)
-    /// When the last beat was, in nanoseconds since `start`.
+    /// Whether the work has started running.
+    private let started = Atomic(false)
+    /// When the last beat was, in nanoseconds since `created`.
     private let lastBeat = Atomic<Int64>(0)
     /// The longest gap between two beats so far, in nanoseconds.
     private let longestBeatGap = Atomic<Int64>(0)
@@ -27,15 +29,26 @@ public final class Heartbeat: Sendable {
         beats.add(1, ordering: .relaxed)
     }
 
-    /// Starts the clock over without counting a beat, when the work starts
-    /// running: the time its task waited to be scheduled is not the work's.
+    /// Starts the clock when the work starts running. Until then no time
+    /// counts against it: the time its task waits to be scheduled, which a
+    /// busy machine stretches, is not the work's.
+    func start() {
+        restart()
+        started.store(true, ordering: .releasing)
+    }
+
+    /// Starts the clock over without counting a beat.
     func restart() {
         lastBeat.store(elapsed(), ordering: .releasing)
     }
 
-    /// The time since the last beat, or since the start before the first.
+    /// The time since the last beat, or since the work started before the
+    /// first; zero before it starts.
     var sinceLastBeat: Duration {
-        .nanoseconds(elapsed() - lastBeat.load(ordering: .acquiring))
+        guard started.load(ordering: .acquiring) else {
+            return .zero
+        }
+        return .nanoseconds(elapsed() - lastBeat.load(ordering: .acquiring))
     }
 
     /// The longest the work went without a beat, counting the time since
@@ -45,7 +58,7 @@ public final class Heartbeat: Sendable {
     }
 
     private func elapsed() -> Int64 {
-        let (seconds, attoseconds) = start.duration(to: .now).components
+        let (seconds, attoseconds) = created.duration(to: .now).components
         return seconds * 1_000_000_000 + attoseconds / 1_000_000_000
     }
 
@@ -135,7 +148,7 @@ extension TestCase {
         let heartbeat = Heartbeat()
         let (outcomes, delivery) = AsyncStream.makeStream(of: StallOutcome<Value>.self)
         let work = Task.detached {
-            heartbeat.restart()
+            heartbeat.start()
             let result: Result<Value, any Error>
             do {
                 result = .success(try await body(heartbeat))

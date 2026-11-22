@@ -124,7 +124,7 @@ extension TestCase {
         let cancellation = Cancellation(at: at)
         let task = Task {
             await cancellation.waitUntilArmed()
-            cancellation.heartbeat.restart()
+            cancellation.heartbeat.start()
             defer { cancellation.noteEnded() }
             return try await body(cancellation)
         }
@@ -359,7 +359,10 @@ public final class Cancellation: Sendable {
         }
         let shortest =
             [limits.endsWithin, limits.stallsAfter].compactMap { $0 }.min() ?? .seconds(1)
-        let watchdog = Task.detached {
+        // At the body's priority, which it inherited from this task: each
+        // priority has threads of its own, and a watchdog on others would
+        // wake on time while the body's are starved, and blame it.
+        let watchdog = Task.detached(priority: Task.currentPriority) {
             let poll = min(max(shortest / 20, .milliseconds(1)), .milliseconds(10))
             var watch = StarvationWatch(limit: shortest, poll: poll)
             while !Task.isCancelled {
