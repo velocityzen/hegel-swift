@@ -58,6 +58,15 @@ public struct Settings: Sendable, Equatable {
     public var nondeterminism: Nondeterminism?
     /// The source of randomness.
     public var backend: Backend?
+    /// The directory a relative database location resolves against: the
+    /// engine's default, `.hegel/examples/`, and a relative path, whether it
+    /// was set here, in `hegel.toml` or in `HEGEL_DATABASE`. Nil leaves them
+    /// relative to the current directory, as the engine has them.
+    ///
+    /// The `.hegel` trait sets it to the directory of the test's package,
+    /// so that a run started from somewhere else, as Xcode starts one, uses
+    /// the database `swift test` does.
+    public var projectDirectory: String?
 
     public init(
         profile: String? = nil,
@@ -74,7 +83,8 @@ public struct Settings: Sendable, Equatable {
         showStatistics: Bool? = nil,
         unboundedChoices: Bool? = nil,
         nondeterminism: Nondeterminism? = nil,
-        backend: Backend? = nil
+        backend: Backend? = nil,
+        projectDirectory: String? = nil
     ) {
         self.profile = profile
         self.testCases = testCases
@@ -91,6 +101,7 @@ public struct Settings: Sendable, Equatable {
         self.unboundedChoices = unboundedChoices
         self.nondeterminism = nondeterminism
         self.backend = backend
+        self.projectDirectory = projectDirectory
     }
 
     /// These settings with every field `other` sets replaced by its value.
@@ -110,7 +121,8 @@ public struct Settings: Sendable, Equatable {
             showStatistics: other.showStatistics ?? showStatistics,
             unboundedChoices: other.unboundedChoices ?? unboundedChoices,
             nondeterminism: other.nondeterminism ?? nondeterminism,
-            backend: other.backend ?? backend
+            backend: other.backend ?? backend,
+            projectDirectory: other.projectDirectory ?? projectDirectory
         )
     }
 }
@@ -244,6 +256,52 @@ public struct HealthCheck: OptionSet, Sendable, Hashable, CustomStringConvertibl
     }
 }
 
+extension Settings {
+    /// The engine's default database root, relative to the current
+    /// directory.
+    static let defaultDatabase = ".hegel/examples"
+
+    /// The database root to use instead of `resolved`, the one the engine
+    /// resolved, to make it relative to `directory` rather than the current
+    /// directory, or nil when it stays: it is disabled (empty) or absolute.
+    /// A nil `resolved` is the engine's default location.
+    static func database(_ resolved: String?, anchoredAt directory: String) -> String? {
+        let relative = resolved ?? defaultDatabase
+        guard !relative.isEmpty, !isAbsolutePath(relative) else {
+            return nil
+        }
+        return joinPath(directory, relative)
+    }
+
+    /// Whether `path` is absolute rather than relative to the current
+    /// directory.
+    package static func isAbsolutePath(_ path: String) -> Bool {
+        #if os(Windows)
+            // A root (`\\server`, `\\dir`, `/dir`) or a drive (`C:`).
+            path.first == "\\" || path.first == "/" || path.dropFirst().first == ":"
+        #else
+            path.first == "/"
+        #endif
+    }
+
+    /// `path` inside `directory`.
+    package static func joinPath(_ directory: String, _ path: String) -> String {
+        guard let last = directory.last, last != "/", last != pathSeparator else {
+            return directory + path
+        }
+        return "\(directory)\(pathSeparator)\(path)"
+    }
+
+    /// The platform's own path separator.
+    package static var pathSeparator: Character {
+        #if os(Windows)
+            "\\"
+        #else
+            "/"
+        #endif
+    }
+}
+
 /// Where a property test is defined. Hegel uses it for reports inside
 /// Antithesis.
 public struct TestLocation: Sendable, Equatable {
@@ -266,9 +324,16 @@ final class EngineSettings {
     let raw: OpaquePointer
     let context = EngineContext()
 
-    init(_ settings: Settings, databaseKey: String?, location: TestLocation?) throws(HegelError) {
+    init(
+        _ settings: Settings,
+        databaseKey: String?,
+        location: TestLocation?,
+        config: EngineConfig = .shared
+    ) throws(HegelError) {
         var handle: OpaquePointer?
         let context = self.context
+        // The first resolution loads the engine's hegel.toml.
+        config.resolving()
         do {
             if let profile = settings.profile {
                 try profile.withHegelString { (name) throws(EngineError) in
@@ -303,6 +368,27 @@ final class EngineSettings {
                 throw .usage(error.message)
             }
         }
+        if let directory = settings.projectDirectory,
+            let anchored = Settings.database(database, anchoredAt: directory)
+        {
+            do {
+                try anchored.withHegelString { (view) throws(EngineError) in
+                    try withUnsafePointer(to: view) { (pointer) throws(EngineError) in
+                        try context.call { hegel_settings_set_database($0, handle, pointer) }
+                    }
+                }
+            } catch {
+                throw .usage(error.message)
+            }
+        }
+    }
+
+    /// The database root the engine resolved: nil for its default,
+    /// `./.hegel/examples/`, and empty when the database is disabled.
+    var database: String? {
+        var pointer: UnsafePointer<hegel_string_t>?
+        hegel_settings_get_database(nil, raw, &pointer)
+        return pointer.map { String(hegelString: $0.pointee) }
     }
 
     deinit {

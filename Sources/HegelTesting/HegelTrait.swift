@@ -52,6 +52,15 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         test.isSuite ? nil : self
     }
 
+    /// Points the engine at the `hegel.toml` of the test's package. Swift
+    /// Testing prepares every test before it runs any, so this comes before
+    /// the engine loads its config.
+    public func prepare(for test: Test) async throws {
+        if let package = PackageDirectory.of(test.sourceLocation.filePath) {
+            PackageDirectory.chooseConfig(package: package)
+        }
+    }
+
     @concurrent
     public func provideScope(
         for test: Test,
@@ -61,8 +70,19 @@ public struct HegelTrait: TestTrait, SuiteTrait, TestScoping {
         let outer = HegelScope.current
         let arguments = testCase.flatMap(TestCaseArguments.init)
         let replaying = reproducing == nil ? outer?.reproducing : blob(for: arguments)
+        // Paths resolve from the test's package, as they do under
+        // `swift test`, wherever the run started.
+        let package = PackageDirectory.of(test.sourceLocation.filePath)
+        if let package {
+            PackageDirectory.warnIfConfigUnseen(
+                package: package,
+                sourceLocation: test.sourceLocation
+            )
+        }
         let scope = HegelScope(
-            settings: (outer?.settings ?? Settings()).merging(settings),
+            settings: Settings(projectDirectory: package)
+                .merging(outer?.settings ?? Settings())
+                .merging(settings),
             reproducing: replaying,
             output: output ?? outer?.output,
             test: test,
