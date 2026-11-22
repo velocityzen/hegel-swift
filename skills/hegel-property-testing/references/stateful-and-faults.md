@@ -19,8 +19,8 @@ ones — configuration changes, bulk operations, reset, close and reopen — whi
 state and hide bugs.
 
 **Rules check what they did.** Compare the operation's result with the model inside the rule.
-Register cheap invariants with `everyStep: true`; the rest are sampled about once per case, and
-always on the initial and final state.
+Register cheap invariants with `everyStep: true`; the rest are sampled about once per case (once
+every 100 steps in a machine of more than 100), and always on the initial and final state.
 
 **Rules don't over-assume.** A rule that rejects (`assume`, `reject`, a draw from an empty pool) is
 skipped. That is right for a true precondition — the API traps, or the test can't express the call.

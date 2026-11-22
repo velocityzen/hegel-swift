@@ -102,8 +102,10 @@ public struct ConcurrentStateMachine<Model: Sendable>: Sendable {
     /// Adds an invariant, checked between rounds while no rule runs.
     ///
     /// Every invariant is checked on the initial and final states. Between
-    /// rounds, the engine checks each one about once per test case, or after
-    /// every round with `everyStep`.
+    /// rounds, the engine checks each one at random: after each round with a
+    /// probability of 1 in `steps`, and at least 1 in 100. That is about once
+    /// per test case up to 100 rounds, and about once every 100 rounds
+    /// beyond. With `everyStep`, it checks it after every round.
     ///
     /// With `pauseFaults`, fault injection is paused while the invariant
     /// runs, so that inside Antithesis no fault lands in the middle of the

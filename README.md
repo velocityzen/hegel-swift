@@ -630,8 +630,9 @@ Expectation failed: s.real.pop() == s.model.removeLast()
 - A rule that rejects, with `assume`, `reject` or a draw from an empty pool, is skipped. The test
   case goes on with another rule.
 - Every invariant is checked on the initial and the final state. Between steps, the engine
-  checks each one about once per test case. Pass `everyStep: true` to check it after every step,
-  which finds the failure at the step that causes it.
+  checks each one at random: about once per test case up to 100 steps, and about once every 100
+  steps beyond. Pass `everyStep: true` to check it after every step, which finds the failure at
+  the step that causes it.
 - Under [Antithesis](https://antithesis.com/), pass `pauseFaults: true` to pause fault injection
   while an invariant runs, so no fault lands in the middle of the check. Outside Antithesis it
   changes nothing. `tc.withFaultsPaused { … }` does the same for any other check. Both work on a

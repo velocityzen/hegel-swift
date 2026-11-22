@@ -109,10 +109,12 @@ public struct StateMachine<Model>: Sendable {
     /// Adds an invariant: a check of the model.
     ///
     /// Every invariant is checked on the initial state and on the final
-    /// state. Between steps, the engine checks each one about once per test
-    /// case, at a step it chooses, or after every step with `everyStep`.
-    /// Checking after every step finds a failure at the step that causes it,
-    /// at the cost of running the check `steps` times as often.
+    /// state. Between steps, the engine checks each one at random: after
+    /// each step with a probability of 1 in `steps`, and at least 1 in 100.
+    /// That is about once per test case up to 100 steps, and about once
+    /// every 100 steps beyond. With `everyStep`, it checks it after every
+    /// step, which finds a failure at the step that causes it, at the cost
+    /// of running the check that much more often.
     ///
     /// With `pauseFaults`, fault injection is paused while the invariant
     /// runs, so that inside Antithesis no fault lands in the middle of the
