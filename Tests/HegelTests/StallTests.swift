@@ -210,6 +210,27 @@ struct StarvationWatchTests {
     }
 }
 
+/// A task can't be held back from being scheduled on demand, so the
+/// heartbeat's clock is tested on its own.
+@Suite("heartbeat clock")
+struct HeartbeatClockTests {
+    @Test("no time counts against work before it starts, and all of it after")
+    func startsWithTheWork() async throws {
+        let heartbeat = Heartbeat()
+        // The work's task waits to be scheduled, as on a busy machine, and
+        // a starved watchdog starts the clock over meanwhile.
+        try await Task.sleep(for: .milliseconds(100))
+        heartbeat.restart()
+        try await Task.sleep(for: .milliseconds(100))
+        let beforeStart = heartbeat.sinceLastBeat
+        heartbeat.start()
+        try await Task.sleep(for: .milliseconds(100))
+        let afterStart = heartbeat.sinceLastBeat
+        #expect(beforeStart == .zero)
+        #expect(afterStart >= .milliseconds(100))
+    }
+}
+
 /// Blocks the calling thread.
 private func blockThread(seconds: Double) {
     Thread.sleep(forTimeInterval: seconds)
